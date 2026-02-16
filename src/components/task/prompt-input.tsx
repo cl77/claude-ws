@@ -62,6 +62,9 @@ export const PromptInput = forwardRef<PromptInputRef, PromptInputProps>(({
   minRows = 1,
   maxRows = 5,
 }, ref) => {
+  // DEBUG: Remove after verifying props are correct
+  console.log('[PromptInput] props:', { disabled, isStreaming, hasOnInterruptAndSend: !!onInterruptAndSend, hasOnCancel: !!onCancel });
+
   const t = useTranslations('chat');
   const [prompt, setPrompt] = useState(initialValue || '');
   const [showCommands, setShowCommands] = useState(false);
