@@ -76,7 +76,13 @@ export function TeamTreeSidebar({ workflows, selectedAgentId, onSelectAgent }: T
           }
 
           return (
-            <div key={entry.attemptId}>
+            <div key={entry.attemptId} className={entries.length > 1 ? 'border-b border-border/50 pb-1 mb-1' : ''}>
+              {/* Task title for concurrent teams */}
+              {entries.length > 1 && entry.taskTitle && (
+                <div className="px-3 py-1 text-[10px] text-muted-foreground/60 truncate">
+                  {entry.taskTitle}
+                </div>
+              )}
               {/* Team groups */}
               {Array.from(teamGroups.entries()).map(([teamName, nodes]) => {
                 const isCollapsed = collapsedTeams.has(teamName);
@@ -160,6 +166,10 @@ function AgentTreeNode({
       <span className="truncate">{displayName}</span>
       {typeLabel && (
         <span className="text-muted-foreground/60 text-[10px] truncate">({typeLabel})</span>
+      )}
+      {/* Error badge */}
+      {node.status === 'failed' && (
+        <span className="size-2 rounded-full bg-red-500 shrink-0" title="Failed" />
       )}
       <span className="text-muted-foreground/50 text-[10px] ml-auto shrink-0">
         {node.status === 'in_progress'

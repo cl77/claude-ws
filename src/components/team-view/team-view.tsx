@@ -1,12 +1,13 @@
 'use client';
 
-import { Network, X } from 'lucide-react';
+import { Network, X, Trash2 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { useWorkflowStore } from '@/stores/workflow-store';
 import { TeamTreeSidebar } from './team-tree-sidebar';
 import { TeamChatTab } from './team-chat-tab';
 import { AgentDetailTab } from './agent-detail-tab';
+import { TaskListTab } from './task-list-tab';
 import { cn } from '@/lib/utils';
 
 interface TeamViewProps {
@@ -23,6 +24,7 @@ export function TeamView({ className }: TeamViewProps) {
     selectAgent,
     setActiveTab,
     getActiveAgentCount,
+    clearHistory,
   } = useWorkflowStore();
 
   const hasWorkflows = workflows.size > 0;
@@ -42,10 +44,26 @@ export function TeamView({ className }: TeamViewProps) {
     }
   }
 
+  // Check if there are any tasks across workflows
+  let totalTasks = 0;
+  for (const entry of workflows.values()) {
+    totalTasks += entry.tasks.length;
+  }
+
   const tabs = [
     { id: 'chat' as const, label: 'Team Chat' },
     { id: 'agent' as const, label: 'Agent', disabled: !selectedAgent },
+    { id: 'tasks' as const, label: `Tasks${totalTasks > 0 ? ` (${totalTasks})` : ''}` },
   ];
+
+  const handleClearAll = () => {
+    for (const attemptId of workflows.keys()) {
+      clearHistory(attemptId);
+    }
+  };
+
+  // Only show clear button when no agents are active
+  const canClear = activeAgentCount === 0;
 
   return (
     <>
@@ -73,14 +91,27 @@ export function TeamView({ className }: TeamViewProps) {
               </Badge>
             )}
           </div>
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={closePanel}
-            className="h-7 w-7"
-          >
-            <X className="h-4 w-4" />
-          </Button>
+          <div className="flex items-center gap-1">
+            {canClear && (
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={handleClearAll}
+                className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                title="Clear history"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </Button>
+            )}
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={closePanel}
+              className="h-7 w-7"
+            >
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
         </div>
 
         {/* Body: tree + content */}
@@ -125,6 +156,7 @@ export function TeamView({ className }: TeamViewProps) {
                   <p className="text-sm">Select an agent from the tree</p>
                 </div>
               )}
+              {activeTab === 'tasks' && <TaskListTab workflows={workflows} />}
             </div>
           </div>
         </div>
