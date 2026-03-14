@@ -266,6 +266,7 @@ export function ConversationView({
         <ToolUseBlock
           key={toolId || index}
           name={block.name || 'Unknown'}
+          id={toolId}
           input={block.input}
           result={toolResult?.result}
           isError={toolResult?.isError}
@@ -309,6 +310,7 @@ export function ConversationView({
         <ToolUseBlock
           key={(output as any)._msgId || toolId || index}
           name={output.tool_name || 'Unknown'}
+          id={toolId}
           input={output.tool_data}
           result={toolResult?.result}
           isError={toolResult?.isError}

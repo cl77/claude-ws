@@ -23,9 +23,11 @@ import { DiffView } from './diff-view';
 import { Button } from '@/components/ui/button';
 import { ConfigProviderButton } from '@/components/auth/auth-error-message';
 import { isProviderAuthError } from '@/components/auth/agent-provider-dialog';
+import { AgentSpawnedCard } from './agent-spawned-card';
 
 interface ToolUseBlockProps {
   name: string;
+  id?: string;
   input?: unknown;
   result?: string;
   isError?: boolean;
@@ -286,9 +288,30 @@ function EditBlock({ input, result, isError }: { input: any; result?: string; is
 }
 
 // Memoized ToolUseBlock - prevents unnecessary re-renders for completed tool calls
-export const ToolUseBlock = memo(function ToolUseBlock({ name, input, result, isError, isStreaming, className, onOpenPanel }: ToolUseBlockProps) {
+export const ToolUseBlock = memo(function ToolUseBlock({ name, id, input, result, isError, isStreaming, className, onOpenPanel }: ToolUseBlockProps) {
   const [isExpanded, setIsExpanded] = useState(false);
   const Icon = getToolIcon(name);
+
+  // Special rendering for Task (agent spawning) tool
+  if (name === 'Task') {
+    const taskInput = input as { name?: string; subagent_type?: string; description?: string; prompt?: string } | null;
+    const agentName = taskInput?.name || taskInput?.subagent_type || 'agent';
+    const prompt = taskInput?.prompt || taskInput?.description || '';
+
+    return (
+      <div className={cn('w-full max-w-full', className)}>
+        <AgentSpawnedCard
+          agentName={agentName}
+          agentType={taskInput?.subagent_type}
+          prompt={prompt}
+          result={result}
+          isStreaming={isStreaming}
+          isError={isError}
+          toolUseId={id}
+        />
+      </div>
+    );
+  }
   const displayText = getToolDisplay(name, input);
   const activeVerb = getToolActiveVerb(name);
   const resultSummary = getResultSummary(name, result);
@@ -428,8 +451,7 @@ export const ToolUseBlock = memo(function ToolUseBlock({ name, input, result, is
               'font-mono bg-muted/30 p-2 rounded overflow-x-auto max-h-40 whitespace-pre-wrap break-all',
               isError && 'text-destructive'
             )}>
-              {result.slice(0, 500)}
-              {result.length > 500 && '...'}
+              {result}
             </pre>
           )}
         </div>
