@@ -134,10 +134,11 @@ export function useAttemptSocket({
       useQuestionsStore.getState().removeQuestion(data.attemptId);
     });
 
-    socketInstance.on('status:workflow', (data: { attemptId: string; nodes: unknown[]; messages: unknown[]; summary: { chain: string[]; completedCount: number; activeCount: number; totalCount: number } }) => {
+    socketInstance.on('status:workflow', (data: { attemptId: string; nodes: unknown[]; messages: unknown[]; tasks?: unknown[]; summary: { chain: string[]; completedCount: number; activeCount: number; totalCount: number } }) => {
       useWorkflowStore.getState().updateWorkflow(data.attemptId, {
         nodes: data.nodes as any,
         messages: data.messages as any,
+        tasks: (data.tasks || []) as any,
         summary: data.summary,
       });
     });

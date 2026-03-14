@@ -157,11 +157,11 @@ function trackWorkflowFromMessage(ctx: EventWiringContext, attemptId: string, me
   if (msg.type === 'assistant' && msg.message?.content) {
     for (const block of msg.message.content) {
       if (block.type === 'tool_use' && block.name === 'Task' && block.id) {
-        const taskInput = (block as { input?: { subagent_type?: string; team_name?: string; name?: string } }).input;
+        const taskInput = (block as { input?: { subagent_type?: string; team_name?: string; name?: string; prompt?: string; description?: string } }).input;
         workflowTracker.trackSubagentStart(
           attemptId, block.id, taskInput?.subagent_type || 'unknown',
           msg.parent_tool_use_id || null,
-          { teamName: taskInput?.team_name, name: taskInput?.name },
+          { teamName: taskInput?.team_name, name: taskInput?.name, prompt: taskInput?.prompt || taskInput?.description },
         );
       }
       if (block.type === 'tool_use' && block.name === 'TeamCreate' && block.id) {
@@ -169,8 +169,34 @@ function trackWorkflowFromMessage(ctx: EventWiringContext, attemptId: string, me
         if (teamInput?.team_name) workflowTracker.trackTeamCreate(attemptId, teamInput.team_name);
       }
       if (block.type === 'tool_use' && block.name === 'SendMessage' && block.id) {
-        const msgInput = (block as { input?: { type?: string; recipient?: string; content?: string; summary?: string } }).input;
-        if (msgInput) workflowTracker.trackMessage(attemptId, msgInput);
+        const msgInput = (block as { input?: { type?: string; to?: string; recipient?: string; content?: string; message?: string | object; summary?: string } }).input;
+        if (msgInput) {
+          // Best-effort sender inference: find most recent active agent
+          const workflow = workflowTracker.getWorkflow(attemptId);
+          let inferredSender: string | undefined;
+          if (workflow) {
+            const activeNodes = workflow.activeNodes
+              .map(id => workflow.nodes.get(id))
+              .filter(Boolean)
+              .sort((a, b) => (b!.startedAt || 0) - (a!.startedAt || 0));
+            inferredSender = activeNodes[0]?.name || activeNodes[0]?.type;
+          }
+          const messageContent = typeof msgInput.message === 'string' ? msgInput.message : (msgInput.content || '');
+          workflowTracker.trackMessage(attemptId, {
+            ...msgInput,
+            content: messageContent,
+            fromAgent: inferredSender,
+            isBroadcast: msgInput.to === '*',
+          });
+        }
+      }
+      if (block.type === 'tool_use' && block.name === 'TaskCreate' && block.id) {
+        const tcInput = (block as { input?: { subject?: string; description?: string; activeForm?: string } }).input;
+        if (tcInput) workflowTracker.trackTaskCreate(attemptId, block.id, tcInput);
+      }
+      if (block.type === 'tool_use' && block.name === 'TaskUpdate' && block.id) {
+        const tuInput = (block as { input?: { taskId?: string; status?: string; owner?: string; subject?: string; activeForm?: string } }).input;
+        if (tuInput) workflowTracker.trackTaskUpdate(attemptId, tuInput);
       }
       // Track Bash tool_uses for BGPID correlation
       if (block.type === 'tool_use' && block.name === 'Bash' && block.id) {
@@ -188,7 +214,17 @@ function trackWorkflowFromMessage(ctx: EventWiringContext, attemptId: string, me
     const userContent = msg.message.content as Array<{ type: string; tool_use_id?: string; is_error?: boolean; content?: string | unknown[] }>;
     for (const block of userContent) {
       if (block.type === 'tool_result' && block.tool_use_id) {
-        workflowTracker.trackSubagentEnd(attemptId, block.tool_use_id, !block.is_error);
+        // Extract result content for Task tool results
+        let resultContent = '';
+        if (typeof block.content === 'string') {
+          resultContent = block.content;
+        } else if (Array.isArray(block.content)) {
+          resultContent = (block.content as Array<{ text?: string }>)
+            .filter(c => c && typeof c === 'object' && 'text' in c)
+            .map(c => c.text || '').join('');
+        }
+
+        workflowTracker.trackSubagentEnd(attemptId, block.tool_use_id, !block.is_error, block.is_error ? resultContent : undefined, resultContent);
 
         // Detect BGPID pattern
         let content = '';

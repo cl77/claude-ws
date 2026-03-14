@@ -1477,6 +1477,7 @@ app.prepare().then(async () => {
         attemptId,
         nodes: expanded.nodes,
         messages: expanded.messages,
+        tasks: expanded.tasks,
         summary: expanded.summary,
       });
 

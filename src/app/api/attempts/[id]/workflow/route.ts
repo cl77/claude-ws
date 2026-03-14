@@ -25,6 +25,7 @@ export async function GET(
       source: 'live',
       nodes: expanded.nodes,
       messages: expanded.messages,
+      tasks: expanded.tasks,
       summary: expanded.summary,
     });
   }
