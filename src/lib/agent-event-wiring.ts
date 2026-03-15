@@ -224,7 +224,31 @@ function trackWorkflowFromMessage(ctx: EventWiringContext, attemptId: string, me
             .map(c => c.text || '').join('');
         }
 
-        workflowTracker.trackSubagentEnd(attemptId, block.tool_use_id, !block.is_error, block.is_error ? resultContent : undefined, resultContent);
+        // Extract the meaningful agent output from result, stripping SDK boilerplate
+        let cleanResult = resultContent;
+        const agentIdIdx = resultContent.indexOf('agentId:');
+        const usageIdx = resultContent.indexOf('<usage>');
+        if (agentIdIdx > 0 || usageIdx > 0) {
+          const cutoff = Math.min(
+            agentIdIdx > 0 ? agentIdIdx : Infinity,
+            usageIdx > 0 ? usageIdx : Infinity,
+          );
+          cleanResult = resultContent.slice(0, cutoff).trim();
+        }
+        // Strip "Spawned successfully..." preamble for foreground agents that returned real content
+        const pipeIdx = cleanResult.indexOf('|');
+        if (pipeIdx > 0 && cleanResult.includes('Spawned successfully')) {
+          cleanResult = cleanResult.slice(pipeIdx + 1).trim();
+        } else if (cleanResult.startsWith('Spawned successfully')) {
+          // Background agent - no real content yet
+          cleanResult = '';
+        }
+
+        workflowTracker.trackSubagentEnd(
+          attemptId, block.tool_use_id, !block.is_error,
+          block.is_error ? resultContent : undefined,
+          cleanResult || resultContent,
+        );
 
         // Detect BGPID pattern
         let content = '';

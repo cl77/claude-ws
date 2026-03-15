@@ -54,7 +54,14 @@ export function AgentSpawnedCard({
   });
 
   const durationStr = node?.durationMs ? formatDuration(node.durationMs) : null;
-  const preview = resultPreview || (result ? result.slice(0, 200) : '');
+
+  // Prefer the clean result from workflow tracker (boilerplate stripped)
+  // Fall back to raw result, cleaning up SDK preamble client-side
+  const cleanResult = node?.resultFull || node?.resultPreview || result || '';
+  const isBackgroundOnly = cleanResult.startsWith('Spawned successfully') && !cleanResult.includes('|');
+  const preview = isBackgroundOnly
+    ? '' // Don't show "Spawned successfully" boilerplate as preview
+    : (node?.resultPreview || resultPreview || (result ? result.slice(0, 200) : ''));
 
   const handleShowInPanel = () => {
     if (toolUseId) {
@@ -122,14 +129,20 @@ export function AgentSpawnedCard({
         </span>
       </div>
 
-      {preview && (
+      {isBackgroundOnly && (
+        <p className="mt-1.5 ml-4 text-[10px] text-muted-foreground/50 italic">
+          background agent — internal activity not visible
+        </p>
+      )}
+
+      {preview && !isBackgroundOnly && (
         <p className="mt-1.5 ml-4 text-xs text-muted-foreground/80 font-mono line-clamp-2">
           &quot;{preview}{preview.length >= 200 ? '...' : ''}&quot;
         </p>
       )}
 
       <div className="mt-2 ml-4 flex items-center gap-3">
-        {result && (
+        {result && !isBackgroundOnly && (
           <button
             onClick={() => setShowFullResult(!showFullResult)}
             className="text-xs text-muted-foreground hover:text-foreground transition-colors flex items-center gap-1"

@@ -106,6 +106,15 @@ export function AgentDetailTab({ agent }: AgentDetailTabProps) {
             </div>
           </div>
         )}
+
+        {/* Opaque background agent indicator */}
+        {!agent.resultFull && !agent.error && agent.status === 'completed' && (
+          <div className="rounded border border-border/50 bg-muted/10 p-3 text-center">
+            <p className="text-xs text-muted-foreground/60 italic">
+              This agent ran in the background. Internal activity (tool calls, messages) is not visible from the parent stream.
+            </p>
+          </div>
+        )}
       </div>
     </ScrollArea>
   );
