@@ -1541,6 +1541,37 @@ app.prepare().then(async () => {
     }
   });
 
+  // Persist tracked task events to DB
+  workflowTracker.on('workflow-update', async ({ attemptId, workflow }) => {
+    if (!workflow?.tasks?.length) return;
+    try {
+      for (const task of workflow.tasks) {
+        await db.insert(schema.trackedTasks)
+          .values({
+            id: task.id,
+            attemptId,
+            subject: task.subject,
+            description: task.description || null,
+            status: task.status,
+            owner: task.owner || null,
+            activeForm: task.activeForm || null,
+            updatedAt: task.updatedAt,
+          })
+          .onConflictDoUpdate({
+            target: schema.trackedTasks.id,
+            set: {
+              status: task.status,
+              owner: task.owner || null,
+              activeForm: task.activeForm || null,
+              updatedAt: task.updatedAt,
+            },
+          });
+      }
+    } catch (err) {
+      log.error({ err, attemptId }, '[Server] Failed to persist tracked tasks');
+    }
+  });
+
   // Extract summary from last assistant message
   function extractSummary(logs: { type: string; content: string }[]): string {
     for (let i = logs.length - 1; i >= 0; i--) {

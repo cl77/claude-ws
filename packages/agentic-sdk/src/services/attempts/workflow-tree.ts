@@ -13,11 +13,16 @@ export function createAttemptWorkflowService(db: any) {
         where: eq(schema.subagents.attemptId, attemptId),
       });
 
-      if (subagents.length === 0) {
+      const tasks = await db.query.trackedTasks.findMany({
+        where: eq(schema.trackedTasks.attemptId, attemptId),
+      });
+
+      if (subagents.length === 0 && tasks.length === 0) {
         return {
           source: 'db' as const,
           nodes: [],
           messages: [],
+          tasks: [],
           summary: { chain: [] as string[], completedCount: 0, activeCount: 0, totalCount: 0 },
         };
       }
@@ -49,10 +54,23 @@ export function createAttemptWorkflowService(db: any) {
           resultFull: s.resultFull,
         }));
 
+      const trackedTasksList = tasks
+        .sort((a: any, b: any) => (a.createdAt || 0) - (b.createdAt || 0))
+        .map((t: any) => ({
+          id: t.id,
+          subject: t.subject,
+          description: t.description,
+          status: t.status,
+          owner: t.owner,
+          activeForm: t.activeForm,
+          updatedAt: t.updatedAt,
+        }));
+
       return {
         source: 'db' as const,
         nodes,
         messages: [],
+        tasks: trackedTasksList,
         summary: { chain, completedCount, activeCount, totalCount: subagents.length },
       };
     },

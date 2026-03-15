@@ -300,7 +300,30 @@ export function initDb() {
     );
 
     CREATE INDEX IF NOT EXISTS idx_subagents_attempt ON subagents(attempt_id);
+
+    CREATE TABLE IF NOT EXISTS tracked_tasks (
+      id TEXT PRIMARY KEY,
+      attempt_id TEXT NOT NULL,
+      subject TEXT NOT NULL,
+      description TEXT,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'in_progress', 'completed', 'deleted')),
+      owner TEXT,
+      active_form TEXT,
+      updated_at INTEGER NOT NULL,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_tracked_tasks_attempt ON tracked_tasks(attempt_id);
   `);
+
+  // Migration: Add prompt and result columns to subagents
+  for (const col of ['prompt', 'result_preview', 'result_full']) {
+    try {
+      sqlite.exec(`ALTER TABLE subagents ADD COLUMN ${col} TEXT`);
+    } catch {
+      // Column already exists
+    }
+  }
 }
 
 // Initialize on first import

@@ -205,6 +205,29 @@ export const subagents = sqliteTable(
   ]
 );
 
+// Tracked tasks from TaskCreate/TaskUpdate tool calls within agent workflows
+export const trackedTasks = sqliteTable(
+  'tracked_tasks',
+  {
+    id: text('id').primaryKey(),
+    attemptId: text('attempt_id').notNull(),
+    subject: text('subject').notNull(),
+    description: text('description'),
+    status: text('status', {
+      enum: ['pending', 'in_progress', 'completed', 'deleted'],
+    }).notNull().default('pending'),
+    owner: text('owner'),
+    activeForm: text('active_form'),
+    updatedAt: integer('updated_at', { mode: 'number' }).notNull(),
+    createdAt: integer('created_at', { mode: 'number' })
+      .notNull()
+      .$defaultFn(() => Date.now()),
+  },
+  (table) => [
+    index('idx_tracked_tasks_attempt').on(table.attemptId),
+  ]
+);
+
 // Agent Factory Plugins table - skills, commands, agents registry
 export const agentFactoryPlugins = sqliteTable('agent_factory_plugins', {
   id: text('id').primaryKey(),
@@ -332,5 +355,7 @@ export type Shell = typeof shells.$inferSelect;
 export type NewShell = typeof shells.$inferInsert;
 export type Subagent = typeof subagents.$inferSelect;
 export type NewSubagent = typeof subagents.$inferInsert;
+export type TrackedTaskRecord = typeof trackedTasks.$inferSelect;
+export type NewTrackedTaskRecord = typeof trackedTasks.$inferInsert;
 export type AppSetting = typeof appSettings.$inferSelect;
 export type NewAppSetting = typeof appSettings.$inferInsert;
