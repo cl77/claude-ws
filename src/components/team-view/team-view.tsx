@@ -1,9 +1,11 @@
 'use client';
 
-import { Network, X, Trash2 } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Network, X, Trash2, Loader2 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { useWorkflowStore } from '@/stores/workflow-store';
+import { useTaskStore } from '@/stores/task-store';
 import { TeamTreeSidebar } from './team-tree-sidebar';
 import { TeamChatTab } from './team-chat-tab';
 import { AgentDetailTab } from './agent-detail-tab';
@@ -12,6 +14,31 @@ import { cn } from '@/lib/utils';
 
 interface TeamViewProps {
   className?: string;
+}
+
+/**
+ * Fetch workflow data from DB for completed attempts when in-memory state is empty.
+ */
+async function fetchWorkflowFromDb(taskId: string): Promise<{ attemptId: string; data: any } | null> {
+  try {
+    const res = await fetch(`/api/tasks/${taskId}/attempts`);
+    if (!res.ok) return null;
+    const { attempts } = await res.json();
+    if (!attempts?.length) return null;
+
+    // Find the most recent attempt with workflow data, try most recent first
+    for (const attempt of attempts.sort((a: any, b: any) => b.createdAt - a.createdAt)) {
+      const wfRes = await fetch(`/api/attempts/${attempt.id}/workflow`);
+      if (!wfRes.ok) continue;
+      const data = await wfRes.json();
+      if (data.nodes?.length > 0 || data.tasks?.length > 0 || data.messages?.length > 0) {
+        return { attemptId: attempt.id, data };
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 export function TeamView({ className }: TeamViewProps) {
@@ -25,12 +52,76 @@ export function TeamView({ className }: TeamViewProps) {
     setActiveTab,
     getActiveAgentCount,
     clearHistory,
+    updateWorkflow,
   } = useWorkflowStore();
+
+  const selectedTaskId = useTaskStore((s) => s.selectedTaskId);
+  const [loading, setLoading] = useState(false);
 
   const hasWorkflows = workflows.size > 0;
   const activeAgentCount = getActiveAgentCount();
 
-  if (!isOpen || !hasWorkflows) return null;
+  // When panel opens and store is empty, try to hydrate from DB
+  useEffect(() => {
+    if (!isOpen || hasWorkflows || !selectedTaskId || loading) return;
+
+    setLoading(true);
+    fetchWorkflowFromDb(selectedTaskId).then((result) => {
+      if (result) {
+        updateWorkflow(result.attemptId, {
+          nodes: result.data.nodes || [],
+          messages: result.data.messages || [],
+          tasks: result.data.tasks || [],
+          summary: result.data.summary || { chain: [], completedCount: 0, activeCount: 0, totalCount: 0 },
+        });
+      }
+      setLoading(false);
+    });
+  }, [isOpen, hasWorkflows, selectedTaskId, loading, updateWorkflow]);
+
+  if (!isOpen) return null;
+
+  // Show loading state while fetching from DB
+  if (!hasWorkflows && loading) {
+    return (
+      <>
+        <div className="fixed inset-0 bg-black/50 z-40 sm:hidden" onClick={closePanel} />
+        <div className={cn(
+          'fixed right-0 top-0 h-full w-[50vw] min-w-[400px] max-w-[800px] bg-background border-l shadow-lg z-50 flex flex-col items-center justify-center',
+          className,
+        )}>
+          <Loader2 className="size-6 animate-spin text-muted-foreground" />
+          <p className="mt-2 text-sm text-muted-foreground">Loading agent data...</p>
+        </div>
+      </>
+    );
+  }
+
+  // No data even after DB check
+  if (!hasWorkflows) {
+    return (
+      <>
+        <div className="fixed inset-0 bg-black/50 z-40 sm:hidden" onClick={closePanel} />
+        <div className={cn(
+          'fixed right-0 top-0 h-full w-[50vw] min-w-[400px] max-w-[800px] bg-background border-l shadow-lg z-50 flex flex-col',
+          className,
+        )}>
+          <div className="flex items-center justify-between px-4 py-2.5 border-b shrink-0">
+            <div className="flex items-center gap-2">
+              <Network className="size-4 text-muted-foreground" />
+              <h2 className="font-semibold text-sm">Agent Team</h2>
+            </div>
+            <Button variant="ghost" size="icon" onClick={closePanel} className="h-7 w-7">
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
+          <div className="flex-1 flex items-center justify-center">
+            <p className="text-sm text-muted-foreground">No agent activity for this task</p>
+          </div>
+        </div>
+      </>
+    );
+  }
 
   // Find selected agent node
   let selectedAgent = null;

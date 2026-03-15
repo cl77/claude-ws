@@ -170,14 +170,7 @@ export function useAttemptSocket({
         taskTitle: data.taskTitle,
         summary: data.summary,
       });
-      if (data.summary.activeCount === 0 && data.summary.totalCount > 0) {
-        setTimeout(() => {
-          const entry = useWorkflowStore.getState().workflows.get(data.attemptId);
-          if (entry && entry.summary.activeCount === 0) {
-            useWorkflowStore.getState().removeWorkflow(data.attemptId);
-          }
-        }, 30000);
-      }
+      // Don't auto-remove — user can clear manually via the trash button in TeamView
     });
 
     socketInstance.on('output:stderr', (data: { attemptId: string; content: string }) => {
