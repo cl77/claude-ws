@@ -242,27 +242,19 @@ export function createTaskQueryMethods(db: any) {
       let totalAdditions = 0, totalDeletions = 0, filesChanged = 0;
 
       const latestAttempt = attempts[0];
-      const isRunning = latestAttempt?.status === 'running';
-      let contextUsed = 0;
+      let contextUsed = latestAttempt?.contextUsed || 0;
       let contextLimit = latestAttempt?.contextLimit || 200000;
-      let contextPercentage = 0;
+      let contextPercentage = latestAttempt?.contextPercentage || 0;
 
-      if (isRunning) {
-        // Show live context state for running attempts
-        contextUsed = latestAttempt?.contextUsed || 0;
-        contextPercentage = latestAttempt?.contextPercentage || 0;
-
-        // Fallback to previous attempt if current has no data yet
-        if (contextPercentage === 0 && attempts.length > 1) {
-          const prev = attempts[1];
-          if (prev?.contextPercentage && prev.contextPercentage > 0) {
-            contextUsed = prev.contextUsed || 0;
-            contextLimit = prev.contextLimit || 200000;
-            contextPercentage = prev.contextPercentage;
-          }
+      // Fallback to previous attempt if current is running with no context data yet
+      if (latestAttempt?.status === 'running' && contextPercentage === 0 && attempts.length > 1) {
+        const prev = attempts[1];
+        if (prev?.contextPercentage && prev.contextPercentage > 0) {
+          contextUsed = prev.contextUsed || 0;
+          contextLimit = prev.contextLimit || 200000;
+          contextPercentage = prev.contextPercentage;
         }
       }
-      // For completed/failed tasks: leave context at 0 — no active context window
 
       const utilization = contextUsed / contextLimit;
       const utilizationPercent = utilization * 100;

@@ -390,6 +390,7 @@ export class ClaudeSDKProvider extends EventEmitter implements Provider {
             checkpointUuid: adapted.checkpointUuid,
             backgroundShell: adapted.backgroundShell,
             resultMessage: message.type === 'result' ? message as SDKResultMessage : undefined,
+            usageEvent: adapted.usageEvent,
             rawMessage: message,
           });
         } catch (messageError) {
