@@ -34,3 +34,23 @@ export async function GET(
   const result = await workflowService.getWorkflowFromDb(attemptId);
   return NextResponse.json(result);
 }
+
+/**
+ * DELETE /api/attempts/[id]/workflow
+ *
+ * Clears all agent session data (subagents, tasks, messages) for an attempt.
+ */
+export async function DELETE(
+  _request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const { id: attemptId } = await params;
+
+  // Clear in-memory state
+  workflowTracker.clearWorkflow(attemptId);
+
+  // Clear DB state
+  await workflowService.deleteWorkflowData(attemptId);
+
+  return NextResponse.json({ deleted: true, attemptId });
+}

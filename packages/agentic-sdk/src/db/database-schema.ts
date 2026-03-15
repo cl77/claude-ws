@@ -228,6 +228,28 @@ export const trackedTasks = sqliteTable(
   ]
 );
 
+// Inter-agent messages from SendMessage tool calls
+export const agentMessages = sqliteTable(
+  'agent_messages',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    attemptId: text('attempt_id').notNull(),
+    fromAgent: text('from_agent'),
+    fromType: text('from_type').notNull(),
+    toType: text('to_type').notNull(),
+    content: text('content').notNull(),
+    summary: text('summary'),
+    isBroadcast: integer('is_broadcast', { mode: 'boolean' }).notNull().default(false),
+    timestamp: integer('timestamp', { mode: 'number' }).notNull(),
+    createdAt: integer('created_at', { mode: 'number' })
+      .notNull()
+      .$defaultFn(() => Date.now()),
+  },
+  (table) => [
+    index('idx_agent_messages_attempt').on(table.attemptId),
+  ]
+);
+
 // Agent Factory Plugins table - skills, commands, agents registry
 export const agentFactoryPlugins = sqliteTable('agent_factory_plugins', {
   id: text('id').primaryKey(),
@@ -357,5 +379,7 @@ export type Subagent = typeof subagents.$inferSelect;
 export type NewSubagent = typeof subagents.$inferInsert;
 export type TrackedTaskRecord = typeof trackedTasks.$inferSelect;
 export type NewTrackedTaskRecord = typeof trackedTasks.$inferInsert;
+export type AgentMessageRecord = typeof agentMessages.$inferSelect;
+export type NewAgentMessageRecord = typeof agentMessages.$inferInsert;
 export type AppSetting = typeof appSettings.$inferSelect;
 export type NewAppSetting = typeof appSettings.$inferInsert;

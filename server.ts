@@ -1572,6 +1572,32 @@ app.prepare().then(async () => {
     }
   });
 
+  // Persist inter-agent messages to DB
+  const persistedMessageTimestamps = new Set<string>();
+  workflowTracker.on('workflow-update', async ({ attemptId, workflow }) => {
+    if (!workflow?.messages?.length) return;
+    try {
+      for (const msg of workflow.messages) {
+        // Deduplicate by attemptId + timestamp
+        const key = `${attemptId}:${msg.timestamp}`;
+        if (persistedMessageTimestamps.has(key)) continue;
+        persistedMessageTimestamps.add(key);
+        await db.insert(schema.agentMessages).values({
+          attemptId,
+          fromAgent: msg.fromAgent || null,
+          fromType: msg.fromType,
+          toType: msg.toType,
+          content: msg.content,
+          summary: msg.summary || null,
+          isBroadcast: msg.isBroadcast || false,
+          timestamp: msg.timestamp,
+        });
+      }
+    } catch (err) {
+      log.error({ err, attemptId }, '[Server] Failed to persist agent messages');
+    }
+  });
+
   // Extract summary from last assistant message
   function extractSummary(logs: { type: string; content: string }[]): string {
     for (let i = logs.length - 1; i >= 0; i--) {
