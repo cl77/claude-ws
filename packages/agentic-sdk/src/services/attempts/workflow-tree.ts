@@ -44,6 +44,9 @@ export function createAttemptWorkflowService(db: any) {
           completedAt: s.completedAt,
           durationMs: s.durationMs,
           error: s.error,
+          prompt: s.prompt,
+          resultPreview: s.resultPreview,
+          resultFull: s.resultFull,
         }));
 
       return {

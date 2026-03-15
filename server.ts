@@ -1514,6 +1514,7 @@ app.prepare().then(async () => {
         teamName: node.teamName || null,
         status: 'in_progress',
         depth: node.depth,
+        prompt: node.prompt || null,
         startedAt: node.startedAt || Date.now(),
       });
     } catch (err) {
@@ -1531,6 +1532,8 @@ app.prepare().then(async () => {
           completedAt: node.completedAt || Date.now(),
           durationMs: node.durationMs || null,
           error: node.error || null,
+          resultPreview: node.resultPreview || null,
+          resultFull: node.resultFull || null,
         })
         .where(eq(schema.subagents.id, node.id));
     } catch (err) {
