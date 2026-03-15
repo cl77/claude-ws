@@ -531,7 +531,9 @@ export const PromptInput = forwardRef<PromptInputRef, PromptInputProps>(({
                     <div className="hidden sm:flex gap-0.5">
                       {Array.from({ length: 10 }).map((_, i) => {
                         const percentage = taskStats?.contextPercentage || 0;
-                        const filled = (percentage / 10) > i;
+                        // Cap bar fill at 100% for visualization
+                        const cappedPct = Math.min(percentage, 100);
+                        const filled = (cappedPct / 10) > i;
                         let color = 'bg-muted';
                         if (filled) {
                           if (percentage > 90) {
