@@ -26,6 +26,7 @@ export async function GET(
       nodes: expanded.nodes,
       messages: expanded.messages,
       tasks: expanded.tasks,
+      mode: expanded.mode,
       summary: expanded.summary,
     });
   }

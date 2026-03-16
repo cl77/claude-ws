@@ -81,6 +81,7 @@ export function TeamView({ className }: TeamViewProps) {
           nodes: result.data.nodes || [],
           messages: result.data.messages || [],
           tasks: result.data.tasks || [],
+          mode: result.data.mode,
           summary: result.data.summary || { chain: [], completedCount: 0, activeCount: 0, totalCount: 0 },
         });
       }

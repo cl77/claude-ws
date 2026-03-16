@@ -27,6 +27,7 @@ export function createAttemptWorkflowService(db: any) {
           nodes: [],
           messages: [],
           tasks: [],
+          mode: 'subagent' as const,
           summary: { chain: [] as string[], completedCount: 0, activeCount: 0, totalCount: 0 },
         };
       }
@@ -82,11 +83,16 @@ export function createAttemptWorkflowService(db: any) {
           updatedAt: t.updatedAt,
         }));
 
+      // Detect mode: if any agent has a teamName, it's an agent-team
+      const hasTeam = subagents.some((s: any) => s.teamName);
+      const mode: 'subagent' | 'agent-team' = hasTeam ? 'agent-team' : 'subagent';
+
       return {
         source: 'db' as const,
         nodes,
         messages: messageList,
         tasks: trackedTasksList,
+        mode,
         summary: { chain, completedCount, activeCount, totalCount: subagents.length },
       };
     },
