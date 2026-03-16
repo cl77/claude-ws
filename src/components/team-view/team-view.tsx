@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Network, X, Trash2, Loader2 } from 'lucide-react';
+import { Network, GitBranch, X, Trash2, Loader2 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { useWorkflowStore } from '@/stores/workflow-store';
@@ -60,6 +60,15 @@ export function TeamView({ className }: TeamViewProps) {
 
   const hasWorkflows = workflows.size > 0;
   const activeAgentCount = getActiveAgentCount();
+
+  // Detect mode from workflow entries
+  let detectedMode: 'subagent' | 'agent-team' = 'subagent';
+  for (const entry of workflows.values()) {
+    if (entry.mode === 'agent-team') {
+      detectedMode = 'agent-team';
+      break;
+    }
+  }
 
   // When panel opens and store is empty, try to hydrate from DB
   useEffect(() => {
@@ -174,8 +183,18 @@ export function TeamView({ className }: TeamViewProps) {
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-2.5 border-b shrink-0">
           <div className="flex items-center gap-2">
-            <Network className="size-4 text-muted-foreground" />
-            <h2 className="font-semibold text-sm">Agent Team</h2>
+            {detectedMode === 'agent-team'
+              ? <Network className="size-4 text-blue-500" />
+              : <GitBranch className="size-4 text-muted-foreground" />
+            }
+            <h2 className="font-semibold text-sm">
+              {detectedMode === 'agent-team' ? 'Agent Team' : 'Subagents'}
+            </h2>
+            {detectedMode === 'agent-team' && (
+              <Badge variant="outline" className="text-[9px] px-1.5 py-0 border-blue-500/30 text-blue-500">
+                team
+              </Badge>
+            )}
             {activeAgentCount > 0 && (
               <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
                 {activeAgentCount} active

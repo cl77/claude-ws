@@ -75,6 +75,7 @@ export interface WorkflowState {
   messages: AgentMessage[]; // Inter-agent messages
   teams: string[]; // Team names created in this workflow
   tasks: TrackedTask[]; // Shared task list from TaskCreate/TaskUpdate
+  mode: 'subagent' | 'agent-team'; // Detected from presence of TeamCreate
 }
 
 /**
@@ -118,6 +119,7 @@ class WorkflowTracker extends EventEmitter {
         messages: [],
         teams: [],
         tasks: [],
+        mode: 'subagent',
       };
       this.workflows.set(attemptId, workflow);
     }
@@ -217,6 +219,7 @@ class WorkflowTracker extends EventEmitter {
     if (!workflow.teams.includes(teamName)) {
       workflow.teams.push(teamName);
     }
+    workflow.mode = 'agent-team';
     this.emit('workflow-update', { attemptId, workflow });
   }
 
@@ -348,6 +351,7 @@ class WorkflowTracker extends EventEmitter {
     nodes: SubagentNode[];
     messages: AgentMessage[];
     tasks: TrackedTask[];
+    mode: 'subagent' | 'agent-team';
     summary: WorkflowSummary;
   } | null {
     const workflow = this.workflows.get(attemptId);
@@ -363,6 +367,7 @@ class WorkflowTracker extends EventEmitter {
       }),
       messages: workflow.messages,
       tasks: workflow.tasks,
+      mode: workflow.mode,
       summary,
     };
   }

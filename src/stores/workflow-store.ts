@@ -8,6 +8,7 @@ export interface WorkflowEntry {
   nodes: SubagentNode[];
   messages: AgentMessage[];
   tasks: TrackedTask[];
+  mode?: 'subagent' | 'agent-team';
   summary: WorkflowSummary;
 }
 
@@ -49,6 +50,7 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
         nodes: data.nodes || existing?.nodes || [],
         messages: data.messages || existing?.messages || [],
         tasks: data.tasks || existing?.tasks || [],
+        mode: data.mode || existing?.mode,
         summary: data.summary || existing?.summary || { chain: [], completedCount: 0, activeCount: 0, totalCount: 0 },
       });
       return { workflows: newMap };

@@ -136,7 +136,7 @@ export function useAttemptSocket({
       useQuestionsStore.getState().removeQuestion(data.attemptId);
     });
 
-    socketInstance.on('status:workflow', (data: { attemptId: string; nodes: unknown[]; messages: unknown[]; tasks?: unknown[]; summary: { chain: string[]; completedCount: number; activeCount: number; totalCount: number } }) => {
+    socketInstance.on('status:workflow', (data: { attemptId: string; nodes: unknown[]; messages: unknown[]; tasks?: unknown[]; mode?: 'subagent' | 'agent-team'; summary: { chain: string[]; completedCount: number; activeCount: number; totalCount: number } }) => {
       const store = useWorkflowStore.getState();
       const previousEntry = store.workflows.get(data.attemptId);
       const previousNodes = previousEntry?.nodes || [];
@@ -146,6 +146,7 @@ export function useAttemptSocket({
         nodes: newNodes,
         messages: data.messages as any,
         tasks: (data.tasks || []) as any,
+        mode: data.mode,
         summary: data.summary,
       });
 

@@ -30,6 +30,7 @@ class CLISession implements ProviderSession {
   sessionId: string | undefined;
   outputFormat?: string;
   child: ChildProcess;
+  activeBackgroundAgents: number = 0;
   private pendingQuestion: PendingQuestion | null = null;
 
   constructor(
@@ -260,11 +261,40 @@ export class ClaudeCLIProvider extends EventEmitter implements Provider {
         rawMessage: message,
       });
 
+      // Track active background agents from task_started system events
+      if (message.type === 'system' && (message as { subtype?: string }).subtype === 'task_started') {
+        session.activeBackgroundAgents = (session.activeBackgroundAgents || 0) + 1;
+        log.info({ attemptId, active: session.activeBackgroundAgents }, 'Background agent started');
+      }
+      // task_notification with idle/completed means a background agent finished
+      if (message.type === 'system' && (message as { subtype?: string }).subtype === 'task_notification') {
+        session.activeBackgroundAgents = Math.max(0, (session.activeBackgroundAgents || 0) - 1);
+        log.info({ attemptId, active: session.activeBackgroundAgents }, 'Background agent notification received');
+      }
+
       // Close stdin on result message so CLI process can exit naturally
-      // Without this, the CLI hangs waiting for more stdin input
+      // If background agents are active, delay close to allow their results to arrive
       if (message.type === 'result') {
-        log.info({ attemptId }, 'Result message received, closing stdin');
-        session.child.stdin?.end();
+        const activeAgents = session.activeBackgroundAgents || 0;
+        if (activeAgents > 0) {
+          log.info({ attemptId, activeAgents }, 'Result received but background agents still active, delaying stdin close');
+          // Wait up to 60s for background agents, checking every 2s
+          const maxWait = 60000;
+          const checkInterval = 2000;
+          let waited = 0;
+          const waitTimer = setInterval(() => {
+            waited += checkInterval;
+            const remaining = session.activeBackgroundAgents || 0;
+            if (remaining <= 0 || waited >= maxWait) {
+              clearInterval(waitTimer);
+              log.info({ attemptId, waited, remaining }, 'Closing stdin (background agents done or timeout)');
+              session.child.stdin?.end();
+            }
+          }, checkInterval);
+        } else {
+          log.info({ attemptId }, 'Result message received, closing stdin');
+          session.child.stdin?.end();
+        }
       }
     } catch {
       // Non-JSON output — ignore

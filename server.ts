@@ -1478,6 +1478,7 @@ app.prepare().then(async () => {
         nodes: expanded.nodes,
         messages: expanded.messages,
         tasks: expanded.tasks,
+        mode: expanded.mode,
         summary: expanded.summary,
       });
 
