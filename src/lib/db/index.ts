@@ -279,6 +279,15 @@ export function initDb() {
     DELETE FROM attempts
     WHERE task_id NOT IN (SELECT id FROM tasks);
   `);
+
+  // Migration: Add prompt and result columns to subagents
+  for (const col of ['prompt', 'result_preview', 'result_full']) {
+    try {
+      sqlite.exec(`ALTER TABLE subagents ADD COLUMN ${col} TEXT`);
+    } catch {
+      // Column already exists
+    }
+  }
 }
 
 // Initialize on first import

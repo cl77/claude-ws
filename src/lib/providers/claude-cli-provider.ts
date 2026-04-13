@@ -128,10 +128,10 @@ export class ClaudeCLIProvider extends EventEmitter implements Provider {
 
     // Close stdin on result message so CLI process can exit naturally
     if (parsed.isResultMessage) {
-      // Don't close stdin if user hasn't answered AskUserQuestion popup yet —
+      // Don't close stdin if user hasn't answered AskUserQuestion popup yet --
       // keep the session alive so their answer can be sent as a follow-up message
       if (session.waitingForUserAnswer) {
-        log.info({ attemptId }, 'Result received but waiting for user answer — keeping stdin open');
+        log.info({ attemptId }, 'Result received but waiting for user answer -- keeping stdin open');
         return;
       }
 

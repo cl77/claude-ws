@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { useTranslations } from 'next-intl';
 import { Key, AlertCircle, Check } from 'lucide-react';
+import { SiweSignIn } from './siwe-sign-in';
 import {
   Dialog,
   DialogContent,
@@ -34,9 +35,10 @@ interface ApiKeyDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSuccess: () => void;
+  siweEnabled?: boolean;
 }
 
-export function ApiKeyDialog({ open, onOpenChange, onSuccess }: ApiKeyDialogProps) {
+export function ApiKeyDialog({ open, onOpenChange, onSuccess, siweEnabled }: ApiKeyDialogProps) {
   const t = useTranslations('auth');
   const tCommon = useTranslations('common');
   const [apiKey, setApiKey] = useState('');
@@ -85,55 +87,75 @@ export function ApiKeyDialog({ open, onOpenChange, onSuccess }: ApiKeyDialogProp
           <DialogDescription>{t('serverRequiresApiKey')}</DialogDescription>
         </DialogHeader>
 
-        <form onSubmit={handleSubmit} className="space-y-6 py-4">
-          <div className="space-y-2">
-            <label htmlFor="api-key" className="text-sm font-medium">
-              {t('apiKey')}
-            </label>
-            <div className="relative">
-              <Key className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-              <Input
-                id="api-key"
-                type="password"
-                value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
-                placeholder={t('enterYourApiKey')}
-                className="pl-8"
+        <div className="space-y-6 py-4">
+          {/* SIWE Sign-In option (shown when enabled) */}
+          {siweEnabled && (
+            <>
+              <SiweSignIn onSuccess={onSuccess} />
+              <div className="flex items-center gap-3">
+                <div className="h-px flex-1 bg-border" />
+                <span className="text-xs text-muted-foreground uppercase">or</span>
+                <div className="h-px flex-1 bg-border" />
+              </div>
+            </>
+          )}
+
+          {/* API Key Input */}
+          <form onSubmit={handleSubmit} className="space-y-6">
+            <div className="space-y-2">
+              <label htmlFor="api-key" className="text-sm font-medium">
+                {t('apiKey')}
+              </label>
+              <div className="relative">
+                <Key className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+                <Input
+                  id="api-key"
+                  type="password"
+                  value={apiKey}
+                  onChange={(e) => setApiKey(e.target.value)}
+                  placeholder={t('enterYourApiKey')}
+                  className="pl-8"
+                  disabled={loading}
+                  autoFocus={!siweEnabled}
+                />
+              </div>
+              <p className="text-xs text-muted-foreground">
+                {t('apiKeyStoredLocally')}
+              </p>
+            </div>
+
+            {/* Error */}
+            {error && (
+              <div className="flex items-center gap-2 text-sm text-destructive">
+                <AlertCircle className="h-4 w-4" />
+                {error}
+              </div>
+            )}
+
+            {/* Success hint */}
+            {!error && apiKey && (
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Check className="h-4 w-4 text-muted-foreground" />
+                {t('pressEnterOrSubmit')}
+              </div>
+            )}
+
+            {/* Actions */}
+            <div className="flex justify-end gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => onOpenChange(false)}
                 disabled={loading}
-                autoFocus
-              />
+              >
+                {tCommon('cancel')}
+              </Button>
+              <Button type="submit" disabled={loading || !apiKey}>
+                {loading ? tCommon('verifying') : tCommon('submit')}
+              </Button>
             </div>
-            <p className="text-xs text-muted-foreground">{t('apiKeyStoredLocally')}</p>
-          </div>
-
-          {error && (
-            <div className="flex items-center gap-2 text-sm text-destructive">
-              <AlertCircle className="h-4 w-4" />
-              {error}
-            </div>
-          )}
-
-          {!error && apiKey && (
-            <div className="flex items-center gap-2 text-sm text-muted-foreground">
-              <Check className="h-4 w-4 text-muted-foreground" />
-              {t('pressEnterOrSubmit')}
-            </div>
-          )}
-
-          <div className="flex justify-end gap-2">
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => onOpenChange(false)}
-              disabled={loading}
-            >
-              {tCommon('cancel')}
-            </Button>
-            <Button type="submit" disabled={loading || !apiKey}>
-              {loading ? tCommon('verifying') : tCommon('submit')}
-            </Button>
-          </div>
-        </form>
+          </form>
+        </div>
       </DialogContent>
     </Dialog>
   );
