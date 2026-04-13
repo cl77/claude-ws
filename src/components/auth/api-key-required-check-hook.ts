@@ -25,7 +25,7 @@ export function useApiKeyCheck(refreshTrigger = 0): {
     const checkAuth = async () => {
       setChecking(true);
       try {
-        const authRequired = await checkAuthRequired();
+        const { authRequired } = await checkAuthRequired();
         if (!authRequired) {
           if (mounted) setNeedsApiKey(false);
           return;

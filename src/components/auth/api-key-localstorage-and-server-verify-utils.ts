@@ -45,14 +45,17 @@ export function clearStoredApiKey(): void {
 /**
  * Check if API key is required by the server
  */
-export async function checkAuthRequired(): Promise<boolean> {
+export async function checkAuthRequired(): Promise<{ authRequired: boolean; siweEnabled: boolean }> {
   try {
     const res = await fetch('/api/auth/verify');
     const data = await res.json();
-    return data.authRequired === true;
+    return {
+      authRequired: data.authRequired === true,
+      siweEnabled: data.siweEnabled === true,
+    };
   } catch {
     // If check fails, assume auth is not required
-    return false;
+    return { authRequired: false, siweEnabled: false };
   }
 }
 
@@ -65,6 +68,23 @@ export async function verifyApiKey(apiKey: string): Promise<boolean> {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ apiKey }),
+    });
+    const data = await res.json();
+    return data.valid === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Verify if there's a valid session (e.g. SIWE cookie) with the server
+ */
+export async function verifySession(): Promise<boolean> {
+  try {
+    const res = await fetch('/api/auth/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
     });
     const data = await res.json();
     return data.valid === true;

@@ -7,6 +7,7 @@ import {
   clearStoredApiKey,
   checkAuthRequired,
   verifyApiKey,
+  verifySession,
   dispatchApiKeyRequired,
   headersToObject,
   API_KEY_REQUIRED_EVENT,
@@ -27,12 +28,14 @@ declare global {
 export function ApiKeyFetchInterceptorProvider({ children }: { children: React.ReactNode }) {
   const [showAuthDialog, setShowAuthDialog] = useState(false);
   const [authChecked, setAuthChecked] = useState(false);
+  const [siweEnabled, setSiweEnabled] = useState(false);
 
   // Check auth on mount before rendering children
   useEffect(() => {
     const check = async () => {
       try {
-        const needed = await checkAuthRequired();
+        const { authRequired: needed, siweEnabled: siwe } = await checkAuthRequired();
+        setSiweEnabled(siwe);
         if (!needed) {
           setAuthChecked(true);
           return;
@@ -49,7 +52,16 @@ export function ApiKeyFetchInterceptorProvider({ children }: { children: React.R
           clearStoredApiKey();
         }
 
-        // No valid key — show dialog, don't render children
+        // Check if there's a valid SIWE session cookie
+        if (siwe) {
+          const valid = await verifySession();
+          if (valid) {
+            setAuthChecked(true);
+            return;
+          }
+        }
+
+        // No valid key or session — show dialog, don't render children
         setShowAuthDialog(true);
       } catch {
         // If check fails, allow through
@@ -117,6 +129,7 @@ export function ApiKeyFetchInterceptorProvider({ children }: { children: React.R
         open={true}
         onOpenChange={() => {}}
         onSuccess={handleAuthSuccess}
+        siweEnabled={siweEnabled}
       />
     );
   }
@@ -128,6 +141,7 @@ export function ApiKeyFetchInterceptorProvider({ children }: { children: React.R
         open={showAuthDialog}
         onOpenChange={setShowAuthDialog}
         onSuccess={handleAuthSuccess}
+        siweEnabled={siweEnabled}
       />
     </>
   );
