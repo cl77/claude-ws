@@ -1,6 +1,6 @@
 /**
  * Re-export from agentic-sdk shared module.
- * All consumers import from '@/lib/models' — this shim keeps those imports working.
+ * All consumers import from './models' — this shim keeps those imports working.
  */
 export {
   type Model,
@@ -11,4 +11,4 @@ export {
   isValidModelId,
   modelIdToDisplayName,
   getModelShortName,
-} from '@agentic-sdk/lib/claude-available-models';
+} from '../../packages/agentic-sdk/src/lib/claude-available-models';

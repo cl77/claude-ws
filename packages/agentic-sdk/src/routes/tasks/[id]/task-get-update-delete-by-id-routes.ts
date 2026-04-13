@@ -2,8 +2,9 @@
  * Task by ID routes - GET, PUT, PATCH, DELETE /api/tasks/:id
  */
 import { FastifyInstance } from 'fastify';
+import { VALID_TASK_STATUSES } from '../../../constants/valid-task-statuses';
 
-const VALID_STATUSES = ['todo', 'in_progress', 'in_review', 'done', 'cancelled'];
+const VALID_STATUSES = VALID_TASK_STATUSES as unknown as string[];
 
 export default async function taskGetUpdateDeleteByIdRoutes(fastify: FastifyInstance) {
   // GET /api/tasks/:id - get single task by id
@@ -22,7 +23,7 @@ export default async function taskGetUpdateDeleteByIdRoutes(fastify: FastifyInst
   const handleUpdate = async (request: any, reply: any) => {
     try {
       const id = request.params.id;
-      const { title, description, status, position, chatInit, lastModel } = request.body as any;
+      const { title, description, status, position, chatInit, lastModel, lastProvider } = request.body as any;
 
       // Validate at least one field is provided
       if (
@@ -31,7 +32,8 @@ export default async function taskGetUpdateDeleteByIdRoutes(fastify: FastifyInst
         !status &&
         position === undefined &&
         chatInit === undefined &&
-        lastModel === undefined
+        lastModel === undefined &&
+        lastProvider === undefined
       ) {
         return reply.code(400).send({ error: 'No fields to update' });
       }
@@ -53,6 +55,12 @@ export default async function taskGetUpdateDeleteByIdRoutes(fastify: FastifyInst
       if (position !== undefined) updateData.position = position;
       if (chatInit !== undefined) updateData.chatInit = chatInit ? 1 : 0;
       if (lastModel !== undefined) updateData.lastModel = lastModel;
+      if (lastProvider !== undefined) {
+        if (!['claude-cli', 'claude-sdk'].includes(lastProvider)) {
+          return reply.code(400).send({ error: 'Invalid lastProvider value' });
+        }
+        updateData.lastProvider = lastProvider;
+      }
 
       const task = await fastify.services.task.update(id, updateData);
       return task;

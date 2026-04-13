@@ -68,9 +68,15 @@ export function CreateTaskDialog({ open, onOpenChange, onTaskCreated }: CreateTa
   useEffect(() => {
     if (open) {
       // Priority: activeProjectId > first selectedProjectId > first project
-      const defaultProject = activeProjectId
+      let defaultProject = activeProjectId
         || (selectedProjectIds.length > 0 ? selectedProjectIds[0] : null)
         || (projects.length > 0 ? projects[0].id : null);
+
+      // Ensure the selected project actually exists (it might have been deleted but cached)
+      if (defaultProject && !projects.some(p => p.id === defaultProject)) {
+        defaultProject = projects.length > 0 ? projects[0].id : null;
+      }
+
       setSelectedProjectId(defaultProject || '');
 
       // Generate new temp task ID for this dialog session
@@ -131,12 +137,18 @@ export function CreateTaskDialog({ open, onOpenChange, onTaskCreated }: CreateTa
         }
       }
 
-      // Get uploaded file IDs from temp task before creating the real task
+      // Get uploaded file IDs and metadata from temp task before creating the real task
       const fileIds = tempTaskId ? getUploadedFileIds(tempTaskId) : [];
+      // Build rich metadata for DB persistence (survives page refresh)
+      const pendingFileMeta = fileIds.length > 0 && tempTaskId
+        ? getPendingFiles(tempTaskId)
+            .filter(f => f.status === 'uploaded' && !f.tempId.startsWith('local-'))
+            .map(f => ({ tempId: f.tempId, originalName: f.originalName, mimeType: f.mimeType, size: f.size }))
+        : undefined;
 
       // Use title if provided, otherwise use message as title
       const taskTitle = title.trim() || chatPrompt.trim();
-      const task = await createTask(selectedProjectId, taskTitle, descriptionForTask);
+      const task = await createTask(selectedProjectId, taskTitle, descriptionForTask, pendingFileMeta);
 
       // Move files from temp task to the real task
       if (tempTaskId && fileIds.length > 0) {

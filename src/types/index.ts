@@ -14,6 +14,9 @@ export type RequestMethod = 'sync' | 'queue';
 export interface FormattedResponse {
   formatted_data: string;
   format: OutputFormat;
+  // Backward-compatible fields for clients expecting parsed messages/status.
+  messages?: ClaudeOutput[];
+  status?: AttemptStatus;
   attempt: {
     id: string;
     taskId: string;
@@ -35,6 +38,7 @@ export interface Project {
   id: string;
   name: string;
   path: string;
+  autopilotMode: 'off' | 'autonomous' | 'ask';
   createdAt: number;
   settings?: ProjectSettings;
 }
@@ -49,6 +53,8 @@ export interface Task {
   position: number;
   chatInit: boolean;
   lastModel: string | null;  // Last used model for this task
+  lastProvider: string | null;  // Last used provider for this task
+  pendingFileIds: string | null;  // JSON array of temp file IDs awaiting first attempt
   createdAt: number;
   updatedAt: number;
 }
@@ -200,7 +206,7 @@ export interface GitDiff {
 }
 
 // Re-export AttemptFile from db schema
-export type { AttemptFile, NewAttemptFile } from '@/lib/db/schema';
+export type { AttemptFile, NewAttemptFile } from '../lib/db/schema';
 
 // Pending file attachment type (before attempt submission)
 export type PendingFileStatus = 'pending' | 'uploading' | 'uploaded' | 'error';

@@ -24,6 +24,10 @@ process.env.CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING = '1';
 // claude-ws spawns Claude CLI from a server process that may itself run inside Claude Code
 delete process.env.CLAUDECODE;
 
+// Run incremental data migrations (DB schema, config/data folder changes)
+import { runMigrations } from './src/lib/migrations/migration-runner';
+runMigrations();
+
 import { createServer } from 'http';
 import { parse } from 'url';
 import next from 'next';
@@ -49,8 +53,19 @@ import { usageTracker } from './src/lib/usage-tracker';
 import { workflowTracker } from './src/lib/workflow-tracker';
 import { gitStatsCache } from './src/lib/git-stats-collector';
 import { tunnelService } from './src/lib/tunnel-service';
+import { getMinioPullQueueWorker } from './src/lib/minio-pull-queue';
+import { getMinioPushQueueWorker } from './src/lib/minio-push-queue';
+import { createAutopilotManager, appendQuestionAnswer, appendSubagentEnded, appendTrackedTaskUpdate } from './src/lib/autopilot';
+import type { AutopilotMode } from './src/lib/autopilot';
 
 import { getPort, getHostname } from './src/lib/server-port-configuration';
+
+function isSqliteForeignKeyError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const maybeError = error as { code?: string; message?: string };
+  return maybeError.code === 'SQLITE_CONSTRAINT_FOREIGNKEY'
+    || (typeof maybeError.message === 'string' && maybeError.message.includes('FOREIGN KEY constraint failed'));
+}
 
 const dev = process.env.NODE_ENV !== 'production';
 const hostname = getHostname();
@@ -58,11 +73,33 @@ const port = getPort();
 
 const app = next({ dev, hostname, port, turbopack: false });
 const handle = app.getRequestHandler();
+const minioPullQueueWorker = getMinioPullQueueWorker();
+const minioPushQueueWorker = getMinioPushQueueWorker();
 
 app.prepare().then(async () => {
   const httpServer = createServer((req, res) => {
     const parsedUrl = parse(req.url!, true);
     const pathname = parsedUrl.pathname || '';
+    const requestStartedAt = Date.now();
+    const shouldTraceRequest =
+      pathname.startsWith('/api/attempts')
+      || pathname.includes('/conversation')
+      || pathname.includes('/running-attempt')
+      || pathname.includes('/pending-question')
+      || pathname.includes('/agent-factory/projects/');
+
+    if (shouldTraceRequest) {
+      res.on('finish', () => {
+        const durationMs = Date.now() - requestStartedAt;
+        log.info({
+          method: req.method,
+          path: pathname,
+          statusCode: res.statusCode,
+          durationMs,
+          hasApiKey: Boolean(req.headers['x-api-key']),
+        }, '[Server] HTTP request traced');
+      });
+    }
 
     // API authentication check - read from process.env directly for immediate effect
     const apiAccessKey = process.env.API_ACCESS_KEY;
@@ -134,6 +171,10 @@ app.prepare().then(async () => {
 
   log.info(`[Server] Restored ${shellManager.runningCount} running shells`);
 
+  // Initialize Autopilot Manager
+  const autopilotManager = createAutopilotManager();
+  autopilotManager.registerQuestionListener(agentManager);
+
   // Initialize Socket.io
   const io = new SocketIOServer(httpServer, {
     cors: {
@@ -145,6 +186,9 @@ app.prepare().then(async () => {
     pingInterval: 10000,
     pingTimeout: 10000,
   });
+
+  // Restore autopilot state from DB (needs io for worker callbacks)
+  await autopilotManager.restoreFromDb({ db, io, schema, agentManager, sessionManager });
 
   // Disconnect cleanup timers - keyed by attemptId
   const disconnectTimers = new Map<string, NodeJS.Timeout>();
@@ -173,6 +217,7 @@ app.prepare().then(async () => {
         outputFormat?: 'json' | 'html' | 'markdown' | 'yaml' | 'raw' | 'custom';
         outputSchema?: string;
         model?: string;  // Optional: model ID for this attempt
+        provider?: 'claude-cli' | 'claude-sdk';  // Optional: provider for this attempt
       }) => {
         const {
           taskId,
@@ -186,7 +231,8 @@ app.prepare().then(async () => {
           projectRootPath,
           outputFormat,
           outputSchema,
-          model
+          model,
+          provider
         } = data;
 
         log.info({
@@ -198,7 +244,9 @@ app.prepare().then(async () => {
           taskTitle,
           projectRootPath,
           outputFormat,
-          hasOutputSchema: !!outputSchema
+          hasOutputSchema: !!outputSchema,
+          model,
+          provider,
         }, '[Socket] attempt:start received');
 
         try {
@@ -238,13 +286,17 @@ app.prepare().then(async () => {
               const { join } = await import('path');
 
               const projectDirName = `${projectId}-${projectName}`;
-              const projectPath = projectRootPath
+              log.info({ projectRootPath, userCwd, projectDirName }, '[Socket] Debug project path creation');
+              const projectPath = (projectRootPath && projectRootPath.trim() !== '')
                 ? join(projectRootPath, projectDirName)
                 : join(userCwd, 'data', 'projects', projectDirName);
+              log.info({ projectPath, projectRootPath, userCwd }, '[Socket] Final project path');
 
               try {
+                const { setupProjectDefaults } = await import('./src/lib/project-utils');
                 await mkdir(projectPath, { recursive: true });
-                log.info({ projectPath }, '[Socket] Created project directory');
+                await setupProjectDefaults(projectPath, projectId);
+                log.info({ projectPath, projectId }, '[Socket] Created project directory and defaults');
               } catch (mkdirError: any) {
                 if (mkdirError?.code !== 'EEXIST') {
                   log.error({ mkdirError }, '[Socket] Failed to create project folder');
@@ -347,6 +399,7 @@ app.prepare().then(async () => {
 
           // Create attempt record
           const attemptId = nanoid();
+
           await db.insert(schema.attempts).values({
             id: attemptId,
             taskId,
@@ -357,20 +410,37 @@ app.prepare().then(async () => {
             outputSchema: outputSchema || null,
           });
 
+
           // Process file attachments if any
+          // Merge fileIds from socket payload with pending fileIds stored on the task
+          let allFileIds = [...fileIds];
+          if (task.pendingFileIds) {
+            try {
+              const dbEntries = JSON.parse(task.pendingFileIds) as (string | { tempId: string })[];
+              for (const entry of dbEntries) {
+                const id = typeof entry === 'string' ? entry : entry.tempId;
+                if (id && !allFileIds.includes(id)) allFileIds.push(id);
+              }
+            } catch { /* ignore parse errors */ }
+          }
+
           let filePaths: string[] = [];
-          if (fileIds.length > 0) {
-            log.info(`[Server] Processing ${fileIds.length} file attachments for attempt ${attemptId}`);
-            const processedFiles = await processAttachments(attemptId, fileIds);
+          if (allFileIds.length > 0) {
+            log.info(`[Server] Processing ${allFileIds.length} file attachments for attempt ${attemptId}`);
+            const processedFiles = await processAttachments(attemptId, allFileIds);
             filePaths = processedFiles.map(f => f.absolutePath);
             log.info(`[Server] Processed ${processedFiles.length} files`);
           }
 
           // Update task status to in_progress if it was todo
-          if (task.status === 'todo') {
+          // Also clear pendingFileIds since they've been processed
+          const taskUpdates: any = { updatedAt: Date.now() };
+          if (task.status === 'todo') taskUpdates.status = 'in_progress';
+          if (task.pendingFileIds) taskUpdates.pendingFileIds = null;
+          if (Object.keys(taskUpdates).length > 1) {
             await db
               .update(schema.tasks)
-              .set({ status: 'in_progress', updatedAt: Date.now() })
+              .set(taskUpdates)
               .where(eq(schema.tasks.id, taskId));
           }
 
@@ -378,11 +448,13 @@ app.prepare().then(async () => {
           socket.join(`attempt:${attemptId}`);
 
           // Start Claude Agent SDK query
+
           agentManager.start({
             attemptId,
             projectPath: project.path,
             prompt,
-            model: model || undefined,  // Pass model to agent-manager
+            model: model || undefined,
+            provider: provider || undefined,
             sessionOptions: Object.keys(sessionOptions).length > 0 ? sessionOptions : undefined,
             filePaths: filePaths.length > 0 ? filePaths : undefined,
             outputFormat,
@@ -395,9 +467,11 @@ app.prepare().then(async () => {
             : sessionOptions.resume
               ? `resuming session ${sessionOptions.resume}`
               : 'new session';
+
           log.info(`[Server] Started attempt ${attemptId} (${sessionMode})${filePaths.length > 0 ? ` with ${filePaths.length} files` : ''}`);
 
           socket.emit('attempt:started', { attemptId, taskId, outputFormat, outputSchema });
+
           // Global event for all clients to track running tasks
           io.emit('task:started', { taskId });
         } catch (error) {
@@ -475,37 +549,65 @@ app.prepare().then(async () => {
       socket.leave(`attempt:${data.attemptId}`);
     });
 
+    // Dedup guard — prevent processing the same answer twice (React double-renders, reconnects)
+    const answeredAttempts = new Set<string>();
+
     // Handle AskUserQuestion response - resolve pending canUseTool callback
     socket.on(
       'question:answer',
       async (data: { attemptId: string; toolUseId?: string; questions: unknown[]; answers: Record<string, string> }) => {
         const { attemptId, toolUseId, questions, answers } = data;
+
+        const dedupKey = `${attemptId}:${toolUseId || ''}`;
+        if (answeredAttempts.has(dedupKey)) {
+          log.warn({ attemptId, toolUseId }, '[Server] Duplicate answer ignored');
+          return;
+        }
+        answeredAttempts.add(dedupKey);
+        setTimeout(() => answeredAttempts.delete(dedupKey), 30_000); // cleanup after 30s
+
         log.info({ attemptId, answers }, '[Server] Received answer');
 
         // Clear persistent question for this task (user has answered)
+        // Also write Q&A to autopilot context file for task resume context
         try {
           const attempt = await db.query.attempts.findFirst({
             where: eq(schema.attempts.id, attemptId),
           });
           if (attempt) {
             agentManager.clearPersistentQuestion(attempt.taskId);
+
+            // Append Q&A to autopilot context file (only for autopilot-managed tasks)
+            const task = await db.query.tasks.findFirst({
+              where: eq(schema.tasks.id, attempt.taskId),
+            });
+            if (task && autopilotManager.isEnabled(task.projectId)) {
+              const project = await db.query.projects.findFirst({
+                where: eq(schema.projects.id, task.projectId),
+              });
+              if (project?.path) {
+                appendQuestionAnswer(project.path, attempt.taskId, questions as any[], answers);
+              }
+            }
           }
         } catch { /* non-critical */ }
 
-        // Check if there's a pending question (canUseTool callback waiting)
-        if (agentManager.hasPendingQuestion(attemptId)) {
-          // Resolve the pending Promise - SDK will resume streaming
-          const success = agentManager.answerQuestion(attemptId, toolUseId, questions, answers);
-          if (success) {
+        // Try to answer directly:
+        // - SDK provider: resolves the blocking canUseTool Promise
+        // - CLI provider: sends answer as follow-up text message via stdin
+        let directlyAnswered = false;
+        if (agentManager.hasPendingQuestion(attemptId) || agentManager.isRunning(attemptId)) {
+          directlyAnswered = agentManager.answerQuestion(attemptId, toolUseId, questions, answers);
+          if (directlyAnswered) {
             log.info(`[Server] Resumed streaming for ${attemptId}`);
           } else {
-            log.error(`[Server] Failed to answer question for ${attemptId}`);
-            socket.emit('error', { message: 'Failed to answer question' });
+            log.warn(`[Server] Direct answer failed for ${attemptId}, falling through to auto-retry`);
           }
-        } else {
-          // No pending question - agent likely crashed or server restarted
-          // Auto-retry by creating a new attempt with the user's answer as the prompt
-          log.warn(`[Server] No pending question for ${attemptId}, attempting legacy flow`);
+        }
+
+        if (!directlyAnswered) {
+          // No active session or direct answer failed — auto-retry with new attempt
+          log.warn(`[Server] Auto-retrying answer for ${attemptId}`);
 
           try {
             // Look up the attempt to get taskId
@@ -563,11 +665,13 @@ app.prepare().then(async () => {
             // Join the socket to the new attempt room
             socket.join(`attempt:${newAttemptId}`);
 
-            // Start the agent
+            // Start the agent (preserve original model/provider from task)
             agentManager.start({
               attemptId: newAttemptId,
               projectPath: project.path,
               prompt: answerPrompt,
+              model: task.lastModel || undefined,
+              provider: (task.lastProvider as 'claude-cli' | 'claude-sdk') || undefined,
               sessionOptions,
             });
 
@@ -576,7 +680,7 @@ app.prepare().then(async () => {
 
             log.warn(`[Server] Auto-retried answer for ${attemptId} as new attempt ${newAttemptId}`);
           } catch (error) {
-            log.error({error},`[Server] Auto-retry failed for ${attemptId}:`);
+            log.error({ error }, `[Server] Auto-retry failed for ${attemptId}:`);
             socket.emit('error', { message: 'Auto-retry failed: ' + (error instanceof Error ? error.message : 'Unknown error') });
           }
         }
@@ -812,6 +916,40 @@ app.prepare().then(async () => {
       if (ack) ack({ alive });
     });
 
+    // Autopilot handlers — primary: set-mode, with backward-compat aliases
+    socket.on('autopilot:set-mode', async (data: { projectId: string; mode: string }) => {
+      const { projectId, mode } = data;
+      if (!['off', 'autonomous', 'ask'].includes(mode)) return;
+      log.info({ projectId, mode }, '[Autopilot] Setting mode');
+      await autopilotManager.setMode(projectId, mode as AutopilotMode, {
+        db, io, schema, agentManager, sessionManager,
+      });
+    });
+
+    // Backward compat: old enable = autonomous
+    socket.on('autopilot:enable', async (data: { projectId: string }) => {
+      log.info({ projectId: data.projectId }, '[Autopilot] Enable (compat → autonomous)');
+      await autopilotManager.setMode(data.projectId, 'autonomous', {
+        db, io, schema, agentManager, sessionManager,
+      });
+    });
+
+    // Backward compat: old disable = off
+    socket.on('autopilot:disable', async (data: { projectId: string }) => {
+      log.info({ projectId: data.projectId }, '[Autopilot] Disable (compat → off)');
+      await autopilotManager.setMode(data.projectId, 'off', {
+        db, io, schema, agentManager, sessionManager,
+      });
+    });
+
+    socket.on('autopilot:status-request', (data: { projectId: string }) => {
+      const { projectId } = data;
+      socket.emit('autopilot:status', {
+        projectId,
+        ...autopilotManager.getStatus(projectId),
+      });
+    });
+
     socket.on('disconnect', () => {
       log.info(`Client disconnected: ${socket.id}`);
 
@@ -955,11 +1093,19 @@ app.prepare().then(async () => {
 
     if (!isStreamingDelta) {
       // Save to database (only complete messages)
-      await db.insert(schema.attemptLogs).values({
-        attemptId,
-        type: 'json',
-        content: JSON.stringify(data),
-      });
+      try {
+        await db.insert(schema.attemptLogs).values({
+          attemptId,
+          type: 'json',
+          content: JSON.stringify(data),
+        });
+      } catch (error) {
+        if (isSqliteForeignKeyError(error)) {
+          log.warn({ attemptId }, '[Server] Skipping JSON log write because attempt no longer exists');
+        } else {
+          throw error;
+        }
+      }
     }
 
     // Check how many clients are in the room
@@ -1025,11 +1171,19 @@ app.prepare().then(async () => {
   });
 
   agentManager.on('stderr', async ({ attemptId, content }) => {
-    await db.insert(schema.attemptLogs).values({
-      attemptId,
-      type: 'stderr',
-      content,
-    });
+    try {
+      await db.insert(schema.attemptLogs).values({
+        attemptId,
+        type: 'stderr',
+        content,
+      });
+    } catch (error) {
+      if (isSqliteForeignKeyError(error)) {
+        log.warn({ attemptId }, '[Server] Skipping stderr log write because attempt no longer exists');
+      } else {
+        throw error;
+      }
+    }
 
     io.to(`attempt:${attemptId}`).emit('output:stderr', { attemptId, content });
   });
@@ -1057,26 +1211,32 @@ app.prepare().then(async () => {
         where: eq(schema.attempts.id, attemptId),
       });
       if (attempt) {
-        // Save to persistent question storage (keyed by taskId, survives agent cleanup)
-        agentManager.setPersistentQuestion(attempt.taskId, {
-          attemptId,
-          toolUseId,
-          questions,
-          timestamp: Date.now(),
-        });
+        // Skip persistent question if autopilot already answered it
+        const alreadyAnswered = !agentManager.hasPendingQuestion(attemptId);
+        if (alreadyAnswered) {
+          log.info({ attemptId }, '[Server] Question already handled (autopilot), skipping persistent storage');
+        } else {
+          // Save to persistent question storage (keyed by taskId, survives agent cleanup)
+          agentManager.setPersistentQuestion(attempt.taskId, {
+            attemptId,
+            toolUseId,
+            questions,
+            timestamp: Date.now(),
+          });
 
-        const task = await db.query.tasks.findFirst({
-          where: eq(schema.tasks.id, attempt.taskId),
-        });
-        io.emit('question:new', {
-          attemptId,
-          taskId: attempt.taskId,
-          taskTitle: task?.title || '',
-          projectId: task?.projectId || '',
-          toolUseId,
-          questions,
-          timestamp: Date.now(),
-        });
+          const task = await db.query.tasks.findFirst({
+            where: eq(schema.tasks.id, attempt.taskId),
+          });
+          io.emit('question:new', {
+            attemptId,
+            taskId: attempt.taskId,
+            taskTitle: task?.title || '',
+            projectId: task?.projectId || '',
+            toolUseId,
+            questions,
+            timestamp: Date.now(),
+          });
+        }
       }
     } catch (err) {
       log.error({ err }, '[Server] Failed to emit global question:new');
@@ -1295,6 +1455,7 @@ app.prepare().then(async () => {
 
   // Register exit event handler
   agentManager.on('exit', async ({ attemptId, code }) => {
+    try {
     // Get attempt to retrieve taskId and current status
     const attempt = await db.query.attempts.findFirst({
       where: eq(schema.attempts.id, attemptId),
@@ -1415,51 +1576,77 @@ app.prepare().then(async () => {
       });
     }
 
-    // Global event for all clients to track completed tasks
-    if (attempt?.taskId) {
-      io.emit('task:finished', { taskId: attempt.taskId, status });
-    }
+    // Skip autopilot/task:finished processing for internal compact attempts
+    if (autopilotManager.isInternalCompact(attemptId)) {
+      log.info({ attemptId }, '[Server] Internal compact attempt finished, skipping autopilot processing');
+    } else {
+      // Global event for all clients to track completed tasks
+      if (attempt?.taskId) {
+        io.emit('task:finished', { taskId: attempt.taskId, status });
+      }
 
-    // Auto-compact check: if context exceeded threshold and auto-compact is enabled
-    if (status === 'completed' && usageStats?.contextHealth?.shouldCompact && attempt?.taskId) {
-      try {
-        const autoCompactSetting = await db
-          .select()
-          .from(schema.appSettings)
-          .where(eq(schema.appSettings.key, 'auto_compact_enabled'))
-          .limit(1);
+      const shouldCompact = !!(status === 'completed' && usageStats?.contextHealth?.shouldCompact);
 
-        const autoCompactEnabled = autoCompactSetting.length > 0 && autoCompactSetting[0].value === 'true';
+      // Autopilot: handle task completion for auto-processing
+      // Pass shouldCompact so autopilot can compact before moving to in_review
+      if (attempt?.taskId && status !== 'cancelled') {
+        const autopilotHandled = autopilotManager.isEnabled(
+          (await db.query.tasks.findFirst({ where: eq(schema.tasks.id, attempt.taskId) }))?.projectId || ''
+        );
 
-        if (autoCompactEnabled) {
-          const project = await db.query.projects.findFirst({
-            where: eq(schema.projects.id, (await db.query.tasks.findFirst({ where: eq(schema.tasks.id, attempt.taskId) }))!.projectId),
-          });
+        await autopilotManager.onTaskFinished(attempt.taskId, status, {
+          db, io, schema, agentManager, sessionManager,
+        }, attempt.id, shouldCompact);
 
-          if (project) {
-            const conversationSummary = await sessionManager.getConversationSummary(attempt.taskId);
+        // If autopilot is active, it handles compact internally (before in_review).
+        // Only run standalone auto-compact for non-autopilot tasks.
+        if (!autopilotHandled && shouldCompact && attempt?.taskId) {
+          try {
+            const autoCompactSetting = await db
+              .select()
+              .from(schema.appSettings)
+              .where(eq(schema.appSettings.key, 'auto_compact_enabled'))
+              .limit(1);
 
-            const compactAttemptId = nanoid();
-            await db.insert(schema.attempts).values({
-              id: compactAttemptId,
-              taskId: attempt.taskId,
-              prompt: 'Auto-compact: summarize conversation context',
-              displayPrompt: 'Auto-compacting conversation...',
-              status: 'running',
-            });
+            const autoCompactEnabled = autoCompactSetting.length > 0 && autoCompactSetting[0].value === 'true';
 
-            log.info({ attemptId: compactAttemptId, taskId: attempt.taskId }, '[Server] Auto-compacting conversation');
-            io.to(`attempt:${attemptId}`).emit('context:compacting', { attemptId: compactAttemptId, taskId: attempt.taskId });
+            if (autoCompactEnabled) {
+              const compactTask = await db.query.tasks.findFirst({ where: eq(schema.tasks.id, attempt.taskId) });
+              const project = compactTask ? await db.query.projects.findFirst({
+                where: eq(schema.projects.id, compactTask.projectId),
+              }) : null;
 
-            agentManager.compact({
-              attemptId: compactAttemptId,
-              projectPath: project.path,
-              conversationSummary,
-            });
+              if (project && compactTask) {
+                const conversationSummary = await sessionManager.getConversationSummary(attempt.taskId);
+                const taskModel = compactTask.lastModel || process.env.ANTHROPIC_MODEL || undefined;
+                const taskProvider = compactTask.lastProvider
+                  || (taskModel && !/^claude/i.test(taskModel) && !/^(opus|sonnet|haiku)$/i.test(taskModel) ? 'claude-sdk' : undefined);
+
+                const compactAttemptId = nanoid();
+                await db.insert(schema.attempts).values({
+                  id: compactAttemptId,
+                  taskId: attempt.taskId,
+                  prompt: 'Auto-compact: summarize conversation context',
+                  displayPrompt: 'Auto-compacting conversation...',
+                  status: 'running',
+                });
+
+                log.info({ attemptId: compactAttemptId, taskId: attempt.taskId, model: taskModel, provider: taskProvider }, '[Server] Auto-compacting conversation');
+                io.to(`attempt:${attemptId}`).emit('context:compacting', { attemptId: compactAttemptId, taskId: attempt.taskId });
+
+                agentManager.compact({
+                  attemptId: compactAttemptId,
+                  projectPath: project.path,
+                  conversationSummary,
+                  model: taskModel,
+                  provider: taskProvider as 'claude-cli' | 'claude-sdk' | undefined,
+                });
+              }
+            }
+          } catch (compactError) {
+            log.error({ compactError }, '[Server] Auto-compact failed');
           }
         }
-      } catch (compactError) {
-        log.error({ compactError }, '[Server] Auto-compact failed');
       }
     }
 
@@ -1486,6 +1673,13 @@ app.prepare().then(async () => {
     usageTracker.clearSession(attemptId);
     workflowTracker.clearWorkflow(attemptId);
     gitStatsCache.clear(attemptId);
+    } catch (error) {
+      if (isSqliteForeignKeyError(error)) {
+        log.warn({ attemptId }, '[Server] Ignoring FK error in exit handler (attempt/task deleted)');
+      } else {
+        log.error({ attemptId, error }, '[Server] Exit handler failed');
+      }
+    }
   });
 
   // Forward tracking module events to Socket.io clients
@@ -1527,9 +1721,9 @@ app.prepare().then(async () => {
               taskTitle: task?.title || 'Unknown',
               summary: expanded.summary,
             });
-          }).catch(() => {});
+          }).catch(() => { });
         }
-      }).catch(() => {});
+      }).catch(() => { });
     }
   });
 
@@ -1604,15 +1798,20 @@ app.prepare().then(async () => {
   });
 
   // Persist inter-agent messages to DB
-  const persistedMessageTimestamps = new Set<string>();
+  // Scoped per-attempt to avoid unbounded memory growth on long-running servers
+  const persistedMessageKeys = new Map<string, Set<string>>();
   workflowTracker.on('workflow-update', async ({ attemptId, workflow }) => {
     if (!workflow?.messages?.length) return;
+    if (!persistedMessageKeys.has(attemptId)) {
+      persistedMessageKeys.set(attemptId, new Set());
+    }
+    const seen = persistedMessageKeys.get(attemptId)!;
     try {
       for (const msg of workflow.messages) {
-        // Deduplicate by attemptId + timestamp
-        const key = `${attemptId}:${msg.timestamp}`;
-        if (persistedMessageTimestamps.has(key)) continue;
-        persistedMessageTimestamps.add(key);
+        // Deduplicate by sender+recipient+timestamp to handle same-ms messages
+        const key = `${msg.fromAgent || msg.fromType}:${msg.toType}:${msg.timestamp}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
         await db.insert(schema.agentMessages).values({
           attemptId,
           fromAgent: msg.fromAgent || null,
@@ -1628,6 +1827,48 @@ app.prepare().then(async () => {
       log.error({ err, attemptId }, '[Server] Failed to persist agent messages');
     }
   });
+
+  // Clean up per-attempt dedup sets when workflow is cleared
+  workflowTracker.on('workflow-cleared', ({ attemptId }: { attemptId: string }) => {
+    persistedMessageKeys.delete(attemptId);
+  });
+
+  // --- Autopilot context file: record sub-agent & sub-task journey ---
+  // Helper to resolve projectPath for an autopilot-managed attempt
+  async function resolveAutopilotContext(attemptId: string): Promise<{ taskId: string; projectPath: string } | null> {
+    const taskId = autopilotManager.getTaskIdForAttempt(attemptId);
+    if (!taskId) return null;
+    const attempt = await db.query.attempts.findFirst({ where: eq(schema.attempts.id, attemptId) });
+    if (!attempt) return null;
+    const task = await db.query.tasks.findFirst({ where: eq(schema.tasks.id, attempt.taskId) });
+    if (!task) return null;
+    const project = await db.query.projects.findFirst({ where: eq(schema.projects.id, task.projectId) });
+    if (!project?.path) return null;
+    return { taskId: attempt.taskId, projectPath: project.path };
+  }
+
+  workflowTracker.on('subagent-end', async ({ attemptId, node }) => {
+    const ctx = await resolveAutopilotContext(attemptId);
+    if (ctx) appendSubagentEnded(ctx.projectPath, ctx.taskId, node.name || null, node.status);
+  });
+
+  // Deduplicate tracked task writes per attempt to avoid spamming context file
+  const lastTrackedTaskSnapshot = new Map<string, string>();
+  workflowTracker.on('workflow-update', async ({ attemptId, workflow }) => {
+    if (!workflow?.tasks?.length) return;
+    const ctx = await resolveAutopilotContext(attemptId);
+    if (!ctx) return;
+    // Only write when task statuses actually change
+    const snapshot = workflow.tasks.map((t: any) => `${t.subject}:${t.status}`).join('|');
+    if (lastTrackedTaskSnapshot.get(attemptId) === snapshot) return;
+    lastTrackedTaskSnapshot.set(attemptId, snapshot);
+    appendTrackedTaskUpdate(ctx.projectPath, ctx.taskId, workflow.tasks);
+  });
+
+  workflowTracker.on('workflow-cleared', ({ attemptId }: { attemptId: string }) => {
+    lastTrackedTaskSnapshot.delete(attemptId);
+  });
+
 
   // Extract summary from last assistant message
   function extractSummary(logs: { type: string; content: string }[]): string {
@@ -1677,6 +1918,13 @@ app.prepare().then(async () => {
   httpServer.listen(port, () => {
     log.info(`> Ready on http://${hostname}:${port}`);
 
+    // Start MinIO sync queue workers with server lifecycle
+    minioPullQueueWorker.start();
+    minioPushQueueWorker.start();
+    if (!process.env.NEXT_PUBLIC_URL) {
+      log.warn('[Server] NEXT_PUBLIC_URL is not set. Access is limited to localhost only. Set NEXT_PUBLIC_URL in .env to enable remote access.');
+    }
+
     // Try to auto-reconnect tunnel after server is ready
     tunnelService.tryAutoReconnect().catch((err) => {
       log.error({ err }, '[Server] Failed to auto-reconnect tunnel');
@@ -1695,6 +1943,13 @@ app.prepare().then(async () => {
     // Stop tunnel
     await tunnelService.stop();
     log.info('> Tunnel stopped');
+
+    // Stop MinIO sync queue workers
+    minioPullQueueWorker.stop();
+    log.info('> MinIO pull queue worker stopped');
+
+    minioPushQueueWorker.stop();
+    log.info('> MinIO push queue worker stopped');
 
     // Cancel all Claude agents first
     agentManager.cancelAll();

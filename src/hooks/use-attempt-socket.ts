@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useCallback, type RefObject } from 'react';
+import { useEffect, useRef, type RefObject } from 'react';
 import { io, Socket } from 'socket.io-client';
 import type { ClaudeOutput, WsAttemptFinished } from '@/types';
 import { useRunningTasksStore } from '@/stores/running-tasks-store';
@@ -9,7 +9,8 @@ import { useWorkflowStore } from '@/stores/workflow-store';
 import { createLogger } from '@/lib/logger';
 import { toast } from '@/hooks/use-toast';
 import type { ActiveQuestion } from '@/hooks/use-attempt-questions';
-import type { SubagentNode } from '@/lib/workflow-tracker';
+import { registerOutputHandler } from '@/hooks/use-attempt-socket-output-handler';
+import type { SubagentNode, AgentMessage, TrackedTask } from '@/lib/workflow-tracker';
 
 const log = createLogger('AttemptSocketHook');
 
@@ -39,6 +40,11 @@ export function useAttemptSocket({
   setActiveQuestion,
 }: UseAttemptSocketOptions) {
   const { addRunningTask, removeRunningTask, markTaskCompleted } = useRunningTasksStore();
+
+  // Keep taskId in a ref so socket event handlers always see the current value
+  // (the socket useEffect has [] deps, so closure values would be stale)
+  const taskIdRef = useRef(taskId);
+  useEffect(() => { taskIdRef.current = taskId; }, [taskId]);
 
   // Initialize socket connection and register all event listeners
   useEffect(() => {
@@ -85,7 +91,7 @@ export function useAttemptSocket({
     });
 
     socketInstance.on('attempt:started', (data: { attemptId: string; taskId: string }) => {
-      if (data.taskId === taskId) {
+      if (data.taskId === taskIdRef.current) {
         currentTaskIdRef.current = data.taskId;
         currentAttemptIdRef.current = data.attemptId;
         setCurrentAttemptId(data.attemptId);
@@ -144,8 +150,8 @@ export function useAttemptSocket({
 
       store.updateWorkflow(data.attemptId, {
         nodes: newNodes,
-        messages: data.messages as any,
-        tasks: (data.tasks || []) as any,
+        messages: data.messages as AgentMessage[],
+        tasks: (data.tasks || []) as TrackedTask[],
         mode: data.mode,
         summary: data.summary,
       });
@@ -210,176 +216,4 @@ export function useAttemptSocket({
       socketRef.current = null;
     };
   }, []);
-}
-
-/**
- * Register the output:json handler for processing streamed messages.
- * Extracted to keep the main useEffect readable while preserving all message
- * merging/delta-accumulation logic exactly as-is.
- */
-function registerOutputHandler(
-  socketInstance: Socket,
-  currentAttemptIdRef: RefObject<string | null>,
-  currentTaskIdRef: RefObject<string | null>,
-  setMessages: (fn: (prev: ClaudeOutput[]) => ClaudeOutput[]) => void,
-  setIsRunning: (running: boolean) => void,
-  removeRunningTask: (taskId: string) => void,
-) {
-  socketInstance.on('output:json', (data: { attemptId: string; data: ClaudeOutput }) => {
-    const { attemptId, data: output } = data;
-
-    // Filter messages by attemptId to prevent cross-task streaming
-    if (currentAttemptIdRef.current && attemptId !== currentAttemptIdRef.current) {
-      return;
-    }
-
-    if (output.type === 'result') {
-      setIsRunning(false);
-      if (currentTaskIdRef.current) removeRunningTask(currentTaskIdRef.current);
-    }
-
-    setMessages((prev) => {
-      // Handle streaming text/thinking deltas
-      if (output.type === 'content_block_delta' && (output as any).delta) {
-        const delta = (output as any).delta;
-
-        if (delta.type !== 'text_delta' && delta.type !== 'thinking_delta') {
-          return prev;
-        }
-
-        const existingIndex = prev.findLastIndex(
-          (m) => m.type === 'assistant' && (m as any)._attemptId === attemptId
-        );
-
-        let assistantMsg: any;
-        let content: any[];
-
-        if (existingIndex >= 0 && (prev[existingIndex] as any)._fromStreaming) {
-          assistantMsg = { ...prev[existingIndex] };
-          content = [...(assistantMsg.message?.content || [])];
-        } else {
-          assistantMsg = {
-            type: 'assistant',
-            message: { role: 'assistant', content: [] },
-            _attemptId: attemptId,
-            _msgId: Math.random().toString(36),
-            _fromStreaming: true,
-          };
-          content = [];
-        }
-
-        if (delta.type === 'text_delta' && delta.text) {
-          const textBlockIndex = content.findIndex((b: any) => b.type === 'text');
-          if (textBlockIndex >= 0) {
-            content[textBlockIndex] = {
-              ...content[textBlockIndex],
-              text: (content[textBlockIndex].text || '') + delta.text,
-            };
-          } else {
-            content.push({ type: 'text', text: delta.text });
-          }
-        }
-
-        if (delta.type === 'thinking_delta' && delta.thinking) {
-          const thinkingBlockIndex = content.findIndex((b: any) => b.type === 'thinking');
-          if (thinkingBlockIndex >= 0) {
-            content[thinkingBlockIndex] = {
-              ...content[thinkingBlockIndex],
-              thinking: (content[thinkingBlockIndex].thinking || '') + delta.thinking,
-            };
-          } else {
-            content.push({ type: 'thinking', thinking: delta.thinking });
-          }
-        }
-
-        assistantMsg.message = { ...assistantMsg.message, content };
-
-        const shouldUpdate = existingIndex >= 0 && (prev[existingIndex] as any)._fromStreaming;
-        if (shouldUpdate) {
-          const updated = [...prev];
-          updated[existingIndex] = assistantMsg;
-          return updated;
-        }
-        return [...prev, assistantMsg];
-      }
-
-      const msgId = Math.random().toString(36);
-      const taggedOutput = { ...output, _attemptId: attemptId, _msgId: msgId } as ClaudeOutput & { _attemptId: string; _msgId: string };
-
-      if (output.type === 'tool_use' && output.id) {
-        const existingIndex = prev.findIndex(
-          (m) => m.type === 'tool_use' && m.id === output.id
-        );
-        if (existingIndex >= 0) {
-          const updated = [...prev];
-          updated[existingIndex] = taggedOutput;
-          return updated;
-        }
-      }
-
-      if (output.type === 'tool_result' && output.tool_data?.tool_use_id) {
-        const toolUseId = output.tool_data.tool_use_id;
-        const existingIndex = prev.findIndex(
-          (m) => m.type === 'tool_result' && m.tool_data?.tool_use_id === toolUseId
-        );
-        if (existingIndex >= 0) {
-          const updated = [...prev];
-          updated[existingIndex] = taggedOutput;
-          return updated;
-        }
-      }
-
-      if (output.type === 'assistant') {
-        const lastMsg = prev[prev.length - 1];
-        const isLastMsgStreamingAssistant = lastMsg?.type === 'assistant' && (lastMsg as any)._fromStreaming;
-
-        if (isLastMsgStreamingAssistant) {
-          const existingIndex = prev.length - 1;
-          const existing = prev[existingIndex] as any;
-          const existingContent = existing.message?.content || [];
-          const newContent = output.message?.content || [];
-
-          const mergedContent = [...existingContent];
-          for (const newBlock of newContent) {
-            const blockIndex = mergedContent.findIndex(
-              (b: any) => b.type === newBlock.type && (
-                (newBlock.type === 'tool_use' && b.id === newBlock.id) ||
-                (newBlock.type !== 'tool_use')
-              )
-            );
-
-            if (blockIndex >= 0 && newBlock.type !== 'tool_use') {
-              const oldBlock = mergedContent[blockIndex];
-              if (newBlock.type === 'text') {
-                if ((newBlock.text?.length || 0) >= (oldBlock.text?.length || 0)) {
-                  mergedContent[blockIndex] = newBlock;
-                }
-              } else if (newBlock.type === 'thinking') {
-                if ((newBlock.thinking?.length || 0) >= (oldBlock.thinking?.length || 0)) {
-                  mergedContent[blockIndex] = newBlock;
-                }
-              } else {
-                mergedContent[blockIndex] = newBlock;
-              }
-            } else if (blockIndex < 0) {
-              mergedContent.push(newBlock);
-            }
-          }
-
-          const updated = [...prev];
-          updated[existingIndex] = {
-            ...existing,
-            message: { ...output.message, content: mergedContent },
-            _attemptId: attemptId,
-          };
-          return updated;
-        }
-      }
-
-      const finalOutput = output.type === 'assistant'
-        ? { ...taggedOutput, _fromStreaming: true }
-        : taggedOutput;
-      return [...prev, finalOutput];
-    });
-  });
 }

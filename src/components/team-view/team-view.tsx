@@ -19,6 +19,10 @@ interface TeamViewProps {
 /**
  * Fetch workflow data from DB for completed attempts when in-memory state is empty.
  */
+/**
+ * Fetch workflow data from DB. Only checks the 3 most recent attempts
+ * to avoid excessive serial requests for tasks with many attempts.
+ */
 async function fetchWorkflowFromDb(taskId: string): Promise<{ attemptId: string; data: any } | null> {
   try {
     const res = await fetch(`/api/tasks/${taskId}/attempts`);
@@ -26,8 +30,9 @@ async function fetchWorkflowFromDb(taskId: string): Promise<{ attemptId: string;
     const { attempts } = await res.json();
     if (!attempts?.length) return null;
 
-    // Find the most recent attempt with workflow data, try most recent first
-    for (const attempt of attempts.sort((a: any, b: any) => b.createdAt - a.createdAt)) {
+    const sorted = attempts.sort((a: any, b: any) => b.createdAt - a.createdAt);
+    // Only check the 3 most recent attempts to avoid N+1 fetch storms
+    for (const attempt of sorted.slice(0, 3)) {
       const wfRes = await fetch(`/api/attempts/${attempt.id}/workflow`);
       if (!wfRes.ok) continue;
       const data = await wfRes.json();
@@ -97,11 +102,22 @@ export function TeamView({ className }: TeamViewProps) {
       <>
         <div className="fixed inset-0 bg-black/50 z-40 sm:hidden" onClick={closePanel} />
         <div className={cn(
-          'fixed right-0 top-0 h-full w-[50vw] min-w-[400px] max-w-[800px] bg-background border-l shadow-lg z-50 flex flex-col items-center justify-center',
+          'fixed right-0 top-0 h-full w-[50vw] min-w-[400px] max-w-[800px] bg-background border-l shadow-lg z-50 flex flex-col',
           className,
         )}>
-          <Loader2 className="size-6 animate-spin text-muted-foreground" />
-          <p className="mt-2 text-sm text-muted-foreground">Loading agent data...</p>
+          <div className="flex items-center justify-between px-4 py-2.5 border-b shrink-0">
+            <div className="flex items-center gap-2">
+              <Network className="size-4 text-muted-foreground" />
+              <h2 className="font-semibold text-sm">Agent Team</h2>
+            </div>
+            <Button variant="ghost" size="icon" onClick={closePanel} className="h-7 w-7">
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
+          <div className="flex-1 flex flex-col items-center justify-center">
+            <Loader2 className="size-6 animate-spin text-muted-foreground" />
+            <p className="mt-2 text-sm text-muted-foreground">Loading agent data...</p>
+          </div>
         </div>
       </>
     );

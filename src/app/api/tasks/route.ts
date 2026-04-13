@@ -51,7 +51,7 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { projectId, title, description, status } = body;
+    const { projectId, title, description, status, pendingFileIds } = body;
 
     if (!projectId || !title) {
       return NextResponse.json(
@@ -64,19 +64,23 @@ export async function POST(request: NextRequest) {
     const validStatuses: TaskStatus[] = ['todo', 'in_progress', 'in_review', 'done', 'cancelled'];
     const taskStatus: TaskStatus = status && validStatuses.includes(status) ? status : 'todo';
 
-    const newTask = await taskService.create({ projectId, title, description, status: taskStatus });
+    const newTask = await taskService.create({
+      projectId, title, description, status: taskStatus,
+      pendingFileIds: pendingFileIds?.length ? JSON.stringify(pendingFileIds) : undefined,
+    });
 
     return NextResponse.json(newTask, { status: 201 });
   } catch (error: any) {
-    console.error('Failed to create task:', error);
-
     // Handle foreign key constraint (invalid projectId)
     if (error?.code === 'SQLITE_CONSTRAINT_FOREIGNKEY') {
+      console.warn(`[API] Rejected task creation due to invalid project ID (likely from an old browser tab).`);
       return NextResponse.json(
         { error: 'Project not found' },
         { status: 404 }
       );
     }
+
+    console.error('Failed to create task:', error);
 
     return NextResponse.json(
       { error: 'Failed to create task' },

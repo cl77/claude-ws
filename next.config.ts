@@ -5,10 +5,17 @@ import createNextIntlPlugin from 'next-intl/plugin';
 const withNextIntl = createNextIntlPlugin('./src/i18n/request.ts');
 
 const nextConfig: NextConfig = {
+  // Allow dev access through Cloudflare proxy
+  allowedDevOrigins: [
+    'localhost',
+    ...(process.env.NEXT_PUBLIC_URL ? [new URL(process.env.NEXT_PUBLIC_URL).hostname] : []),
+  ],
   // Enable gzip compression for responses
   compress: true,
   // Transpile xterm packages for proper CSS/ESM handling
-  transpilePackages: ['@xterm/xterm', '@xterm/addon-fit', '@xterm/addon-web-links'],
+  transpilePackages: [
+    '@xterm/xterm', '@xterm/addon-fit', '@xterm/addon-web-links', '@pierre/diffs',
+  ],
   outputFileTracingRoot: path.join(__dirname),
   outputFileTracingIncludes: {
     '/': ['./src/**/*'],
@@ -16,6 +23,7 @@ const nextConfig: NextConfig = {
   turbopack: {
     root: path.join(__dirname),
   },
+  serverExternalPackages: ['better-sqlite3', 'node-pty'],
   experimental: {
     optimizePackageImports: ['lucide-react', '@radix-ui/react-icons', 'date-fns', 'lodash'],
   },
@@ -67,12 +75,14 @@ const nextConfig: NextConfig = {
     ];
   },
   webpack: (config, { isServer }) => {
-    // Force single instance of @codemirror packages to avoid instanceof issues
+    // Force single instance of @codemirror packages to avoid instanceof issues.
+    // Use require.resolve + path.dirname to follow pnpm symlinks to the canonical path,
+    // ensuring all imports resolve to the exact same module instance.
     config.resolve.alias = {
       ...config.resolve.alias,
-      '@codemirror/state': path.resolve(__dirname, 'node_modules/@codemirror/state'),
-      '@codemirror/view': path.resolve(__dirname, 'node_modules/@codemirror/view'),
-      '@codemirror/language': path.resolve(__dirname, 'node_modules/@codemirror/language'),
+      '@codemirror/state': path.dirname(require.resolve('@codemirror/state/package.json')),
+      '@codemirror/view': path.dirname(require.resolve('@codemirror/view/package.json')),
+      '@codemirror/language': path.dirname(require.resolve('@codemirror/language/package.json')),
     };
 
     // Externalize node-pty from server-side bundling (native addon)

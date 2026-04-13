@@ -9,17 +9,40 @@
  */
 
 import { EventEmitter } from 'events';
-import * as pty from '@homebridge/node-pty-prebuilt-multiarch';
+import { existsSync, mkdirSync } from 'fs';
 import { nanoid } from 'nanoid';
 import { detectShell } from './terminal-shell-detect';
 import { createLogger } from './logger';
 
 const log = createLogger('TerminalManager');
 
+// Lazy-load node-pty — native module that may not compile on all platforms (e.g. Windows ARM64).
+// Types are defined inline to avoid TypeScript errors when the package is not installed.
+interface IPty {
+  pid: number;
+  cols: number;
+  rows: number;
+  process: string;
+  onData: (callback: (data: string) => void) => void;
+  onExit: (callback: (e: { exitCode: number; signal?: number }) => void) => void;
+  write: (data: string) => void;
+  resize: (cols: number, rows: number) => void;
+  kill: (signal?: string) => void;
+}
+interface NodePty {
+  spawn: (file: string, args: string[], options: Record<string, unknown>) => IPty;
+}
+let pty: NodePty | null = null;
+try {
+  pty = require('@homebridge/node-pty-prebuilt-multiarch');
+} catch {
+  log.warn('node-pty not available — interactive terminal feature disabled');
+}
+
 export interface TerminalSession {
   id: string;
   projectId: string;
-  ptyProcess: pty.IPty;
+  ptyProcess: IPty;
   cols: number;
   rows: number;
   cwd: string;
@@ -47,9 +70,22 @@ class TerminalManager extends EventEmitter {
     process.on('exit', () => this.destroyAll());
   }
 
+  get isAvailable(): boolean {
+    return pty !== null;
+  }
+
   create(options: TerminalCreateOptions): string {
+    if (!pty) {
+      throw new Error('Interactive terminals unavailable — node-pty failed to load on this platform');
+    }
     const { projectId, cwd, cols = 80, rows = 24, shell } = options;
     const terminalId = nanoid();
+
+    // Ensure cwd exists — pty.spawn fails with "chdir(2) failed" if missing
+    if (!existsSync(cwd)) {
+      log.warn({ terminalId, cwd }, 'Terminal cwd missing, creating directory');
+      mkdirSync(cwd, { recursive: true });
+    }
 
     const shellConfig = shell
       ? { file: shell, args: [] as string[], env: { TERM: 'xterm-256color' } }

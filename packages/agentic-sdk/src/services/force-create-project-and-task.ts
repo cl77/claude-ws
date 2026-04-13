@@ -31,6 +31,7 @@ export interface ForceCreateParams {
 export interface ForceCreateResult {
   task: typeof schema.tasks.$inferSelect;
   project: typeof schema.projects.$inferSelect;
+  projectCreated: boolean;
 }
 
 export function createForceCreateService(db: any) {
@@ -42,6 +43,7 @@ export function createForceCreateService(db: any) {
      */
     async ensureProjectAndTask(params: ForceCreateParams): Promise<ForceCreateResult> {
       const { taskId, projectId, projectName, taskTitle, projectRootPath, defaultBasePath } = params;
+      let projectCreated = false;
 
       // Check if project exists
       let project = await db.select().from(schema.projects)
@@ -58,7 +60,7 @@ export function createForceCreateService(db: any) {
           throw new ForceCreateError('projectName must contain at least one alphanumeric character', 400);
         }
 
-        const projectDirName = `${projectId}-${sanitized}`;
+        const projectDirName = projectId;
         const projectPath = projectRootPath
           ? join(projectRootPath, projectDirName)
           : join(defaultBasePath, 'data', 'projects', projectDirName);
@@ -79,6 +81,7 @@ export function createForceCreateService(db: any) {
           path: projectPath,
           createdAt: Date.now(),
         });
+        projectCreated = true;
 
         project = await db.select().from(schema.projects)
           .where(eq(schema.projects.id, projectId)).get();
@@ -114,7 +117,7 @@ export function createForceCreateService(db: any) {
       const task = await db.select().from(schema.tasks)
         .where(eq(schema.tasks.id, taskId)).get();
 
-      return { task, project };
+      return { task, project, projectCreated };
     },
   };
 }

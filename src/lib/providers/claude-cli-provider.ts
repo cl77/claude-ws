@@ -1,83 +1,25 @@
 /**
  * Claude CLI Provider - Spawns Claude CLI with stream-json protocol
  *
- * Uses `claude --input-format stream-json --output-format stream-json`
- * for long-running interactive sessions. CLI natively handles MCP,
- * skills, slash commands — no JS config needed.
+ * Orchestrator: delegates process spawning and stdout parsing to focused
+ * sub-modules. Owns session lifecycle, AskUserQuestion coordination,
+ * and event emission.
+ *
+ * Sub-modules:
+ * - CLISession / PendingQuestion → claude-cli-session-and-pending-question-types.ts
+ * - Process spawner              → claude-cli-process-spawner.ts
+ * - Stdout line parser           → claude-cli-stdout-line-to-provider-event-parser.ts
  */
 
 import { EventEmitter } from 'events';
-import { spawn, type ChildProcess } from 'child_process';
-import { adaptSDKMessage, isValidSDKMessage, type SDKResultMessage } from '../sdk-event-adapter';
 import { findClaudePath } from '../cli-query';
 import { createLogger } from '../logger';
+import { CLISession } from './claude-cli-session-and-pending-question-types';
+import { spawnCLIProcess, sendInitialPrompt } from './claude-cli-process-spawner';
+import { parseCLILine } from './claude-cli-stdout-line-to-provider-event-parser';
 import type { Provider, ProviderSession, ProviderStartOptions, ProviderEventData, ProviderId } from './types';
 
 const log = createLogger('CLIProvider');
-
-// --- Pending question types ---
-
-interface PendingQuestion {
-  toolUseId: string;
-  questions: unknown[];
-  timestamp: number;
-}
-
-// --- CLI Session ---
-
-class CLISession implements ProviderSession {
-  readonly providerId: ProviderId = 'claude-cli';
-  sessionId: string | undefined;
-  outputFormat?: string;
-  child: ChildProcess;
-  activeBackgroundAgents: number = 0;
-  private pendingQuestion: PendingQuestion | null = null;
-
-  constructor(
-    readonly attemptId: string,
-    child: ChildProcess,
-    outputFormat?: string,
-  ) {
-    this.child = child;
-    this.outputFormat = outputFormat;
-  }
-
-  setPendingQuestion(q: PendingQuestion | null): void {
-    this.pendingQuestion = q;
-  }
-
-  getPendingQuestion(): PendingQuestion | null {
-    return this.pendingQuestion;
-  }
-
-  /**
-   * Write a tool_result answer to stdin
-   */
-  writeToolResult(toolUseId: string, content: string): boolean {
-    if (!this.child.stdin || this.child.stdin.destroyed) return false;
-    const msg = JSON.stringify({
-      type: 'user',
-      message: {
-        role: 'user',
-        content: [{ type: 'tool_result', tool_use_id: toolUseId, content }],
-      },
-    });
-    return this.child.stdin.write(msg + '\n');
-  }
-
-  cancel(): void {
-    if (this.child && !this.child.killed) {
-      this.child.kill('SIGTERM');
-      setTimeout(() => {
-        if (this.child && !this.child.killed) {
-          this.child.kill('SIGKILL');
-        }
-      }, 3000);
-    }
-  }
-}
-
-// --- Provider ---
 
 export class ClaudeCLIProvider extends EventEmitter implements Provider {
   readonly id: ProviderId = 'claude-cli';
@@ -85,8 +27,7 @@ export class ClaudeCLIProvider extends EventEmitter implements Provider {
   private sessions = new Map<string, CLISession>();
 
   resolveModel(displayModelId: string): string {
-    // CLI accepts full model IDs directly
-    return displayModelId;
+    return displayModelId; // CLI accepts full model IDs directly
   }
 
   async start(options: ProviderStartOptions): Promise<ProviderSession> {
@@ -94,85 +35,29 @@ export class ClaudeCLIProvider extends EventEmitter implements Provider {
 
     const claudePath = findClaudePath();
     if (!claudePath) {
-      // Emit error and return a dummy session
       const error = 'Claude CLI not found. Set CLAUDE_PATH in your .env file.';
       this.emit('error', { attemptId, error, errorName: 'CLINotFound' });
       throw new Error(error);
     }
 
-    const args: string[] = [
-      '--input-format', 'stream-json',
-      '--output-format', 'stream-json',
-      '--verbose',
-      '--permission-mode', 'bypassPermissions',
-    ];
-
-    if (model) {
-      args.push('--model', model);
-    }
-
-    if (sessionOptions?.resume) {
-      args.push('--resume', sessionOptions.resume);
-    }
-
-    if (maxTurns) {
-      args.push('--max-turns', String(maxTurns));
-    }
-
-    // Append system prompt (model identity) via --append-system-prompt
-    if (systemPromptAppend) {
-      args.push('--append-system-prompt', systemPromptAppend);
-    }
-
-    // Normalize path for Windows
-    const normalizedProjectPath = process.platform === 'win32'
-      ? projectPath.replace(/\//g, '\\')
-      : projectPath;
-
-    log.info({ claudePath, argsCount: args.length, attemptId }, 'Spawning CLI process');
-
-    const child = spawn(claudePath, args, {
-      cwd: normalizedProjectPath,
-      stdio: ['pipe', 'pipe', 'pipe'], // stdin open for sending messages
-      env: {
-        ...process.env,
-        FORCE_COLOR: '0',
-        NO_COLOR: '1',
-        TERM: 'dumb',
-        PATH: process.platform === 'win32'
-          ? (process.env.PATH || '').split(';').filter(p => {
-              const lp = p.toLowerCase().trim().replace(/\//g, '\\');
-              return !lp.startsWith('c:\\windows') &&
-                !lp.startsWith('c:\\program files (x86)\\windows kits');
-            }).join(';')
-          : `${process.env.PATH}:/opt/homebrew/bin:/usr/local/bin`,
-      },
+    const child = spawnCLIProcess({
+      claudePath, projectPath, model, attemptId,
+      sessionResume: sessionOptions?.resume,
+      maxTurns, systemPromptAppend,
     });
 
     const session = new CLISession(attemptId, child, outputFormat);
     this.sessions.set(attemptId, session);
+    sendInitialPrompt(child, prompt);
 
-    // Send initial prompt via stdin
-    const initialMessage = JSON.stringify({
-      type: 'user',
-      message: {
-        role: 'user',
-        content: [{ type: 'text', text: prompt }],
-      },
-    });
-    child.stdin?.write(initialMessage + '\n');
-
-    // Set up output handling
     let buffer = '';
 
     child.stdout?.on('data', (chunk: Buffer) => {
       buffer += chunk.toString();
       const lines = buffer.split('\n');
       buffer = lines.pop() || '';
-
       for (const line of lines) {
-        if (!line.trim()) continue;
-        this.processMessage(session, line);
+        if (line.trim()) this.processLine(session, line);
       }
     });
 
@@ -185,21 +70,12 @@ export class ClaudeCLIProvider extends EventEmitter implements Provider {
     child.on('error', (err) => {
       log.error({ attemptId, err }, 'Process error');
       this.sessions.delete(attemptId);
-      this.emit('error', {
-        attemptId,
-        error: err.message,
-        errorName: err.name,
-      });
+      this.emit('error', { attemptId, error: err.message, errorName: err.name });
     });
 
     child.on('exit', (code) => {
       log.info({ attemptId, code }, 'Process exited');
-
-      // Process remaining buffer
-      if (buffer.trim()) {
-        this.processMessage(session, buffer);
-      }
-
+      if (buffer.trim()) this.processLine(session, buffer);
       this.sessions.delete(attemptId);
       this.emit('complete', { attemptId, sessionId: session.sessionId });
     });
@@ -207,172 +83,136 @@ export class ClaudeCLIProvider extends EventEmitter implements Provider {
     return session;
   }
 
-  private processMessage(session: CLISession, line: string): void {
+  private processLine(session: CLISession, line: string): void {
     const { attemptId } = session;
+    const parsed = parseCLILine(line, session);
+    if (!parsed) return;
 
-    try {
-      const message = JSON.parse(line);
-      log.debug({ type: message?.type, attemptId }, 'CLI message received');
+    if (parsed.messagePayload.sessionId) session.sessionId = parsed.messagePayload.sessionId;
 
-      if (!isValidSDKMessage(message)) {
-        log.debug({ type: message?.type }, 'Invalid message skipped');
-        return;
-      }
+    if (parsed.askUserQuestion) {
+      const { toolUseId, questions } = parsed.askUserQuestion;
+      session.setPendingQuestion({ toolUseId, questions, timestamp: Date.now() });
+      session.waitingForUserAnswer = true; // keep stdin open until user answers
+      this.emit('question', { attemptId, toolUseId, questions });
+    }
 
-      const adapted = adaptSDKMessage(message);
-
-      // Capture session ID
-      if (adapted.sessionId) {
-        session.sessionId = adapted.sessionId;
-      }
-
-      // Detect AskUserQuestion from assistant messages
-      if (adapted.askUserQuestion) {
-        const { toolUseId, questions } = adapted.askUserQuestion;
-        session.setPendingQuestion({ toolUseId, questions, timestamp: Date.now() });
-        this.emit('question', { attemptId, toolUseId, questions });
-        // Don't return — still emit the message for UI display
-      }
-
-      // Detect CLI auto-handling AskUserQuestion (bypassPermissions sends tool_result automatically)
-      // When this happens, clear pending question so we don't send a duplicate tool_result via stdin.
-      // The user's answer will be handled by the server's auto-retry flow instead.
-      if (message.type === 'user' && session.getPendingQuestion()) {
-        const rawContent = (message as { message?: { content?: Array<{ type: string; tool_use_id?: string }> } }).message?.content || [];
-        const pending = session.getPendingQuestion();
-        for (const block of rawContent) {
-          if (block.type === 'tool_result' && block.tool_use_id && pending && block.tool_use_id === pending.toolUseId) {
-            log.info({ attemptId, toolUseId: block.tool_use_id }, 'CLI auto-handled AskUserQuestion, clearing pending (answer will use auto-retry flow)');
-            session.setPendingQuestion(null);
-            break;
+    // CLI auto-handled AskUserQuestion — clear pending, user's answer will
+    // be sent as a follow-up text message via stdin ("chat about this" approach)
+    if (parsed.cliAutoHandledQuestion) {
+      session.setPendingQuestion(null);
+      // Strip is_error from auto-handled response so the tool block doesn't show red
+      const output = parsed.messagePayload.output as unknown as Record<string, unknown>;
+      const msg = output?.message as { content?: Array<{ type: string; is_error?: boolean }> };
+      if (msg?.content) {
+        for (const block of msg.content) {
+          if (block.type === 'tool_result' && block.is_error) {
+            delete block.is_error;
           }
         }
       }
+    }
 
-      // Emit adapted message with metadata
-      this.emit('message', {
-        attemptId,
-        output: adapted.output,
-        sessionId: adapted.sessionId,
-        checkpointUuid: adapted.checkpointUuid,
-        backgroundShell: adapted.backgroundShell,
-        resultMessage: message.type === 'result' ? message as SDKResultMessage : undefined,
-        usageEvent: adapted.usageEvent,
-        rawMessage: message,
-      });
+    this.emit('message', { attemptId, ...parsed.messagePayload });
 
-      // Track active background agents from task_started system events
-      if (message.type === 'system' && (message as { subtype?: string }).subtype === 'task_started') {
-        session.activeBackgroundAgents = (session.activeBackgroundAgents || 0) + 1;
-        log.info({ attemptId, active: session.activeBackgroundAgents }, 'Background agent started');
+    // Track active background agents from system events
+    const rawMessage = parsed.messagePayload.rawMessage as Record<string, unknown>;
+    if (rawMessage.type === 'system' && (rawMessage as { subtype?: string }).subtype === 'task_started') {
+      session.activeBackgroundAgents = (session.activeBackgroundAgents || 0) + 1;
+      log.info({ attemptId, active: session.activeBackgroundAgents }, 'Background agent started');
+    }
+    if (rawMessage.type === 'system' && (rawMessage as { subtype?: string }).subtype === 'task_notification') {
+      session.activeBackgroundAgents = Math.max(0, (session.activeBackgroundAgents || 0) - 1);
+      log.info({ attemptId, active: session.activeBackgroundAgents }, 'Background agent notification received');
+    }
+
+    // Close stdin on result message so CLI process can exit naturally
+    if (parsed.isResultMessage) {
+      // Don't close stdin if user hasn't answered AskUserQuestion popup yet --
+      // keep the session alive so their answer can be sent as a follow-up message
+      if (session.waitingForUserAnswer) {
+        log.info({ attemptId }, 'Result received but waiting for user answer -- keeping stdin open');
+        return;
       }
-      // task_notification with idle/completed means a background agent finished
-      if (message.type === 'system' && (message as { subtype?: string }).subtype === 'task_notification') {
-        session.activeBackgroundAgents = Math.max(0, (session.activeBackgroundAgents || 0) - 1);
-        log.info({ attemptId, active: session.activeBackgroundAgents }, 'Background agent notification received');
-      }
 
-      // Close stdin on result message so CLI process can exit naturally
-      // If background agents are active, delay close to allow their results to arrive
-      if (message.type === 'result') {
-        const activeAgents = session.activeBackgroundAgents || 0;
-        if (activeAgents > 0) {
-          log.info({ attemptId, activeAgents }, 'Result received but background agents still active, delaying stdin close');
-          // Wait up to 60s for background agents, checking every 2s
-          const maxWait = 60000;
-          const checkInterval = 2000;
-          let waited = 0;
-          const waitTimer = setInterval(() => {
-            waited += checkInterval;
-            const remaining = session.activeBackgroundAgents || 0;
-            if (remaining <= 0 || waited >= maxWait) {
-              clearInterval(waitTimer);
-              log.info({ attemptId, waited, remaining }, 'Closing stdin (background agents done or timeout)');
-              session.child.stdin?.end();
+      const activeAgents = session.activeBackgroundAgents || 0;
+      if (activeAgents > 0) {
+        log.info({ attemptId, activeAgents }, 'Result received but background agents still active, delaying stdin close');
+        const maxWait = 60000;
+        const checkInterval = 2000;
+        let waited = 0;
+        session.backgroundWaitTimer = setInterval(() => {
+          waited += checkInterval;
+          const remaining = session.activeBackgroundAgents || 0;
+          if (remaining <= 0 || waited >= maxWait) {
+            if (session.backgroundWaitTimer) {
+              clearInterval(session.backgroundWaitTimer);
+              session.backgroundWaitTimer = null;
             }
-          }, checkInterval);
-        } else {
-          log.info({ attemptId }, 'Result message received, closing stdin');
-          session.child.stdin?.end();
-        }
+            log.info({ attemptId, waited, remaining }, 'Closing stdin (background agents done or timeout)');
+            session.child.stdin?.end();
+          }
+        }, checkInterval);
+      } else {
+        log.info({ attemptId }, 'Result message received, closing stdin');
+        session.child.stdin?.end();
       }
-    } catch {
-      // Non-JSON output — ignore
-      log.trace({ line: line.substring(0, 100) }, 'Non-JSON line');
     }
   }
 
-  answerQuestion(attemptId: string, toolUseId: string | undefined, questions: unknown[], answers: Record<string, string>): boolean {
+  answerQuestion(attemptId: string, _toolUseId: string | undefined, _questions: unknown[], answers: Record<string, string>): boolean {
     const session = this.sessions.get(attemptId);
-    if (!session) {
-      log.warn({ attemptId }, 'answerQuestion: session not found');
-      return false;
-    }
+    if (!session) { log.warn({ attemptId }, 'answerQuestion: session not found'); return false; }
 
-    const pending = session.getPendingQuestion();
-    if (!pending) {
-      log.info({ attemptId }, 'answerQuestion: no pending question (CLI likely auto-handled it)');
-      return false;
-    }
+    // CLI auto-handles AskUserQuestion internally, so we can't inject a tool_result.
+    // Instead, send user's answers as a follow-up text message via stdin
+    // (equivalent to "Chat about this" in CLI interactive mode).
+    const answerText = Object.entries(answers)
+      .map(([q, a]) => `Q: ${q}\nA: ${a}`)
+      .join('\n\n');
+    const prompt = `The user answered the previous question:\n${answerText}\n\nPlease continue based on these answers.`;
 
-    if (toolUseId && pending.toolUseId !== toolUseId) {
-      log.warn({ attemptId, expected: pending.toolUseId, received: toolUseId }, 'Rejecting stale answer');
-      return false;
-    }
-
-    // Format the answer as the SDK expects
-    const answerContent = JSON.stringify({ questions, answers });
-    const success = session.writeToolResult(pending.toolUseId, answerContent);
-
+    const success = session.writeUserMessage(prompt);
     if (success) {
-      log.info({ attemptId, toolUseId: pending.toolUseId }, 'Answer sent to CLI via stdin');
+      log.info({ attemptId }, 'Answer sent to CLI as follow-up message via stdin');
+      session.waitingForUserAnswer = false; // allow stdin close on next result
       session.setPendingQuestion(null);
       this.emit('questionResolved', { attemptId });
     } else {
-      log.error({ attemptId, toolUseId: pending.toolUseId }, 'Failed to write answer to CLI stdin');
+      log.error({ attemptId }, 'Failed to write answer to CLI stdin (process may have exited)');
     }
-
     return success;
   }
 
   cancelQuestion(attemptId: string): boolean {
     const session = this.sessions.get(attemptId);
     if (!session) return false;
-
     const pending = session.getPendingQuestion();
     if (!pending) return false;
-
-    // Send deny as tool_result
     const success = session.writeToolResult(pending.toolUseId, 'User cancelled');
-
     if (success) {
       session.setPendingQuestion(null);
       this.emit('questionResolved', { attemptId });
     }
-
     return success;
   }
 
   hasPendingQuestion(attemptId: string): boolean {
-    const session = this.sessions.get(attemptId);
-    return !!session?.getPendingQuestion();
+    return !!this.sessions.get(attemptId)?.getPendingQuestion();
   }
 
   getPendingQuestionData(attemptId: string): { toolUseId: string; questions: unknown[]; timestamp: number } | null {
-    const session = this.sessions.get(attemptId);
-    return session?.getPendingQuestion() || null;
+    return this.sessions.get(attemptId)?.getPendingQuestion() || null;
   }
 
   cancelSession(attemptId: string): boolean {
     const session = this.sessions.get(attemptId);
     if (!session) return false;
-
     session.cancel();
     this.sessions.delete(attemptId);
     return true;
   }
 
-  // Type-safe event emitter overrides
   override on<K extends keyof ProviderEventData>(event: K, listener: (data: ProviderEventData[K]) => void): this {
     return super.on(event, listener as (...args: unknown[]) => void);
   }
