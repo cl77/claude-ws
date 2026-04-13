@@ -15,11 +15,6 @@ const nextConfig: NextConfig = {
   // Transpile xterm packages for proper CSS/ESM handling
   transpilePackages: [
     '@xterm/xterm', '@xterm/addon-fit', '@xterm/addon-web-links', '@pierre/diffs',
-    // Force Turbopack to compile these as a single bundle to avoid
-    // "module factory not available" HMR errors with shared @lezer/common
-    '@codemirror/state', '@codemirror/view', '@codemirror/language',
-    '@lezer/common', '@lezer/highlight', '@lezer/lr',
-    '@uiw/react-codemirror',
   ],
   outputFileTracingRoot: path.join(__dirname),
   outputFileTracingIncludes: {
@@ -80,12 +75,14 @@ const nextConfig: NextConfig = {
     ];
   },
   webpack: (config, { isServer }) => {
-    // Force single instance of @codemirror packages to avoid instanceof issues
+    // Force single instance of @codemirror packages to avoid instanceof issues.
+    // Use require.resolve + path.dirname to follow pnpm symlinks to the canonical path,
+    // ensuring all imports resolve to the exact same module instance.
     config.resolve.alias = {
       ...config.resolve.alias,
-      '@codemirror/state': path.resolve(__dirname, 'node_modules/@codemirror/state'),
-      '@codemirror/view': path.resolve(__dirname, 'node_modules/@codemirror/view'),
-      '@codemirror/language': path.resolve(__dirname, 'node_modules/@codemirror/language'),
+      '@codemirror/state': path.dirname(require.resolve('@codemirror/state/package.json')),
+      '@codemirror/view': path.dirname(require.resolve('@codemirror/view/package.json')),
+      '@codemirror/language': path.dirname(require.resolve('@codemirror/language/package.json')),
     };
 
     // Externalize node-pty from server-side bundling (native addon)

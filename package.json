@@ -66,9 +66,6 @@
     "pnpm": ">=9.0.0"
   },
   "pnpm": {
-    "overrides": {
-      "axios": "0.30.3"
-    },
     "onlyBuiltDependencies": [
       "@parcel/watcher",
       "@swc/core",
@@ -206,5 +203,14 @@
   },
   "devDependencies": {
     "@types/js-yaml": "^4.0.9"
-  }
+  },
+  "overrides": {
+    "axios": "0.30.3",
+    "@codemirror/state": "$@codemirror/state",
+    "@codemirror/view": "$@codemirror/view",
+    "@codemirror/language": "$@codemirror/language"
+  },
+  "workspaces": [
+    "."
+  ]
 }
