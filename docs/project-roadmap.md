@@ -362,7 +362,7 @@ fc6bda6 chore: bump version to 0.3.100
 - Feature requests: GitHub Discussions
 
 ### Support Channels
-- Documentation: https://github.com/Claude-Workspace/claude-ws#readme
+- Documentation: https://github.com/cl77/claude-ws#readme
 - Community: GitHub Discussions
 - Issues: GitHub Issues
 

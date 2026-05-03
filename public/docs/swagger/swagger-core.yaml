@@ -8,10 +8,10 @@ info:
   version: 0.1.25
   contact:
     name: Claude.WS
-    url: https://github.com/Claude-Workspace/claude-ws
+    url: https://github.com/cl77/claude-ws
   license:
     name: MIT
-    url: https://github.com/Claude-Workspace/claude-ws/blob/main/LICENSE
+    url: https://github.com/cl77/claude-ws/blob/main/LICENSE
 
 servers:
   - url: http://localhost:33333

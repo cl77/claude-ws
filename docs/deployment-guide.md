@@ -58,7 +58,7 @@ Opens http://localhost:8556, persists configuration in `~/.claude/` directory.
 For development, contributing, or using unreleased features:
 
 ```bash
-git clone https://github.com/Claude-Workspace/claude-ws.git
+git clone https://github.com/cl77/claude-ws.git
 cd claude-ws
 pnpm install
 pnpm dev

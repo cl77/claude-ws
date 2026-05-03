@@ -106,7 +106,7 @@ Examples:
   claude-ws logs -f             Follow daemon logs
   claude-ws stop                Stop the daemon
 
-For more info: https://github.com/Claude-Workspace/claude-ws
+For more info: https://github.com/cl77/claude-ws
   `);
   process.exit(0);
 }

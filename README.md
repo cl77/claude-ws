@@ -47,7 +47,7 @@ npm install -g claude-ws
 claude-ws
 
 # Option 3: From source
-git clone https://github.com/Claude-Workspace/claude-ws.git
+git clone https://github.com/cl77/claude-ws.git
 cd claude-ws
 pnpm install && pnpm dev
 ```

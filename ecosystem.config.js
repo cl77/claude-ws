@@ -9,12 +9,10 @@ module.exports = {
       watch: false,
       max_memory_restart: '1G',
       env: {
-        NODE_ENV: 'production',
-        PATH: '/home/roxane/.nvm/versions/node/v22.16.0/bin:/usr/local/bin:/usr/bin:/bin'
+        NODE_ENV: 'production'
       },
       env_production: {
-        NODE_ENV: 'production',
-        PATH: '/home/roxane/.nvm/versions/node/v22.16.0/bin:/usr/local/bin:/usr/bin:/bin'
+        NODE_ENV: 'production'
       },
       error_file: './logs/err.log',
       out_file: './logs/out.log',

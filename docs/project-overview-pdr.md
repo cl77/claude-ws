@@ -78,7 +78,7 @@ Install as a global binary. Convenient for regular use. Works with `claude-works
 
 ### 3. From Source
 ```bash
-git clone https://github.com/Claude-Workspace/claude-ws.git
+git clone https://github.com/cl77/claude-ws.git
 cd claude-ws
 pnpm install
 pnpm dev

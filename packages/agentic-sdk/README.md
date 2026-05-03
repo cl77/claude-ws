@@ -1,6 +1,6 @@
 # Agentic SDK Server
 
-Headless backend for [claude-ws](https://github.com/Claude-Workspace/claude-ws) — exposes the full claude-ws API as pure REST + SSE without the frontend UI. Built for programmatic task execution, CI/CD pipelines, automation scripts, and custom integrations.
+Headless backend for [claude-ws](https://github.com/cl77/claude-ws) — exposes the full claude-ws API as pure REST + SSE without the frontend UI. Built for programmatic task execution, CI/CD pipelines, automation scripts, and custom integrations.
 
 ## What is this?
 
